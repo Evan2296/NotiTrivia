@@ -1,10 +1,3 @@
-//
-//  ContentView.swift
-//  NotiTrivia Watch App
-//
-//  Created by Evan Levinsky on 4/18/26.
-//
-
 import SwiftUI
 
 struct ContentView: View {
