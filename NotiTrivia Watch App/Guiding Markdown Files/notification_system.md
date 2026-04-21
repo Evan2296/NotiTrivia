@@ -1,83 +1,109 @@
+---
+
+# 📄 notification_system.md (UPDATED)
+
+```markdown
 # Notification System
 
 ## Schedule
 - Two notifications per day:
-  - 12:00 PM (user's local time)
-  - 6:00 PM (user's local time)
-- Schedule is fixed and not user-configurable (v1)
+  - 12:00 PM (local time)
+  - 6:00 PM (local time)
+- Scheduling is fixed in v1 and not user-configurable
+
+---
 
 ## Notification Content
 
 ### Question Notification
 Each notification includes:
-- Full trivia question (fully readable)
+- Full trivia question
 - Answer options:
   - Multiple choice (max 4 buttons)
   - OR True / False buttons
 
-### Interaction Model
-- User answers directly within notification
+---
+
+## Interaction Model
+- User responds directly within notification
 - No app launch required
-- Only the first answer is accepted
-- Subsequent taps are ignored
+- Only first valid response is accepted per question
+- Subsequent interactions are ignored (idempotent behavior)
+
+---
+
+## Question Lifecycle State
+
+Each question has a lifecycle:
+
+1. Delivered
+2. Active (valid window)
+3. Expired
+4. Evaluated (correct / incorrect / expired)
+
+---
 
 ## Validity Window
-- Each question is valid for 1 hour from delivery timestamp
+- Questions are valid for 1 hour from delivery timestamp
 
 ### Within 1 Hour
-- Answer is accepted
-- Evaluated normally
+- Response is accepted and evaluated normally
 
 ### After 1 Hour
-- Question is expired
-- Any interaction:
-  - Does NOT count as an answer
-  - Triggers expired response
+- Question is marked expired
+- Responses are ignored for scoring
+
+---
 
 ## Expired Behavior
+When a question expires:
 - Result notification is sent:
-  - Message: "Time expired"
-  - Correct answer is shown
-  - Streak is reset
+  - "Time expired"
+  - Correct answer shown
+  - Streak reset
+
+---
 
 ## Answer Handling
 
 ### Correct Answer
-- Send immediate result notification:
+- Immediate result notification:
   - "Correct"
-  - Display updated streak (e.g., 🔥 Streak: 5)
+  - Updated streak shown (e.g., 🔥 Streak: 5)
 
 ### Incorrect Answer
-- Send immediate result notification:
+- Immediate result notification:
   - "Incorrect"
-  - Show correct answer
+  - Correct answer displayed
   - Streak reset
 
 ### Expired Answer
-- Send immediate result notification:
+- Immediate result notification:
   - "Time expired"
-  - Show correct answer
+  - Correct answer displayed
   - Streak reset
 
+---
+
 ## Result Notification Timing
-- Sent immediately after answer interaction
+- Sent immediately after response event
 - No artificial delay
 
-## Multiple Notification Handling
-- Notifications are independent
-- 6 PM notification is sent regardless of noon result
-- No queuing or blocking logic
+---
 
-## Notification Lifecycle
-- Notifications are NOT removed or modified after delivery
-- Expiration is handled via logic, not UI removal
+## Multiple Notification Handling
+- Noon and 6 PM notifications operate independently
+- No queueing or dependency between questions
+
+---
+
+## Notification Lifecycle Rules
+- Notifications are not updated after delivery
+- Expiration is handled via timestamp logic, not UI mutation
+
+---
 
 ## Constraints
-- Max 4 answer buttons
-- Text must remain concise and readable on watch
-- Avoid long questions (optimize during content processing)
-
-## Future Considerations
-- User-configurable frequency
-- Adaptive scheduling
-- Richer feedback (explanations)
+- Maximum 4 answer buttons per notification
+- Must remain readable on Apple Watch glance view
+- Questions are optimized for short-form display
