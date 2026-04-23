@@ -1,7 +1,16 @@
 # NotiTrivia – Product Specification
 
 ## Overview
-NotiTrivia is a watchOS-first, notification-driven trivia application that delivers two daily trivia questions via Apple Watch notifications.
+NotiTrivia is a watchOS-only, notification-driven trivia application that delivers two daily trivia questions via Apple Watch notifications.
+
+## Architecture
+- WatchOS-only app (no iPhone companion required)
+- No backend in v1
+- Fully offline-capable
+- All data stored locally on device
+- Question dataset is bundled with the app (14k questions JSON)
+
+---
 
 ## Core Principle
 The product is designed for ultra-low friction, passive engagement. All primary interaction occurs within notifications.
@@ -31,18 +40,21 @@ The product is designed for ultra-low friction, passive engagement. All primary 
 ---
 
 ## Supported Question Types
-- Multiple Choice (4 options)
+- Multiple Choice (max 4 options)
 - True / False
 
 ---
 
-## Question Data Model (Runtime)
-Each question is represented as:
+## Question Data Model (Static)
+
+Questions are bundled locally as JSON:
 
 ```json
 {
+  "id": "string (unique)",
   "question": "string",
   "choices": ["string"],
   "correct": "string",
-  "type": "multiple_choice | true_false"
+  "type": "multiple_choice | true_false",
+  "times_used": 0
 }
