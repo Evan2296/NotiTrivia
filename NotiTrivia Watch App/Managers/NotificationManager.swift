@@ -16,7 +16,6 @@ enum NotifID {
         "result-\(UUID().uuidString)"
     }
 
-    // Cached formatter — avoids allocating one per call
     private static let formatter: DateFormatter = {
         let f = DateFormatter()
         f.dateFormat = "yyyy-MM-dd-HH-mm"
@@ -28,6 +27,14 @@ enum NotifID {
         formatter.string(from: date)
     }
 }
+
+// MARK: - Answer Category Helpers
+
+/// Per-question category ID — keyed by question ID so each question has its own button titles.
+private func questionCategoryID(_ questionID: String) -> String { "Q-\(questionID)" }
+
+/// Positional action identifier for index N (used for answer mapping in the handler).
+func answerActionID(_ index: Int) -> String { "answer_\(index)" }
 
 // MARK: - NotificationManager
 
@@ -55,6 +62,15 @@ final class NotificationManager {
         }
     }
 
+    /// Registers a minimal base category set at launch.
+    /// Per-question categories (with real answer titles) are registered in refillSchedule.
+    func registerCategories() {
+        // Register an empty placeholder so the system knows about our category namespace.
+        // Real per-question categories are added in refillSchedule and sendTestNotification.
+        // This call is intentionally minimal — it just ensures the center is initialized.
+        center.setNotificationCategories([])
+    }
+
     // MARK: - Schedule Maintenance
 
     /// Checks pending notifications and fills any gaps up to targetScheduledCount
@@ -63,15 +79,12 @@ final class NotificationManager {
         center.getPendingNotificationRequests { [weak self] pending in
             guard let self else { return }
 
-            // Collect all pending question identifiers for fast lookup
             let pendingIDs = Set(pending.map(\.identifier))
-
             let calendar = Calendar.current
             let now = Date()
 
-            // Batch all new categories so we register them in one call
-            var newCategories: [UNNotificationCategory] = []
-            var requestsToSchedule: [(UNNotificationRequest, UNNotificationRequest)] = [] // (question, expiration)
+            var newCategories: Set<UNNotificationCategory> = []
+            var requestsToSchedule: [(UNNotificationRequest, UNNotificationRequest)] = []
 
             for slot in [Slot.noon, Slot.evening] {
                 let hour = slot == .noon ? 12 : 18
@@ -83,7 +96,6 @@ final class NotificationManager {
                 let needed = self.targetScheduledCount - alreadyScheduled
                 guard needed > 0 else { continue }
 
-                // Start from today's slot time; advance to tomorrow if already past
                 var components = calendar.dateComponents([.year, .month, .day], from: now)
                 components.hour = hour
                 components.minute = 0
@@ -102,20 +114,17 @@ final class NotificationManager {
                     let qID = NotifID.question(slot: slot, date: candidate)
 
                     if !pendingIDs.contains(qID) {
-                        // Select a question and build the notification content.
-                        // QuestionState is NOT written here — it is written at delivery
-                        // time via the notification's userInfo payload.
                         if let question = QuestionEngine.shared.selectAndReserve() {
                             let (qRequest, eRequest, category) = self.buildRequests(
                                 slot: slot,
                                 question: question,
                                 deliveredAt: candidate
                             )
-                            newCategories.append(category)
+                            newCategories.insert(category)
                             requestsToSchedule.append((qRequest, eRequest))
                             filled += 1
                         } else {
-                            break // No questions available
+                            break
                         }
                     }
 
@@ -123,21 +132,19 @@ final class NotificationManager {
                 }
             }
 
-            // Register all new categories in one atomic call
-            if !newCategories.isEmpty {
-                self.center.getNotificationCategories { existing in
-                    var updated = existing
-                    for cat in newCategories { updated.insert(cat) }
-                    self.center.setNotificationCategories(updated)
+            guard !requestsToSchedule.isEmpty else { return }
 
-                    // Schedule all requests after categories are registered
-                    for (qRequest, eRequest) in requestsToSchedule {
-                        self.center.add(qRequest) { error in
-                            if let error { print("[NotificationManager] Question schedule error: \(error)") }
-                        }
-                        self.center.add(eRequest) { error in
-                            if let error { print("[NotificationManager] Expiration schedule error: \(error)") }
-                        }
+            // Register all new per-question categories in one call, then schedule
+            self.center.getNotificationCategories { existing in
+                let merged = existing.union(newCategories)
+                self.center.setNotificationCategories(merged)
+
+                for (qRequest, eRequest) in requestsToSchedule {
+                    self.center.add(qRequest) { error in
+                        if let error { print("[NotificationManager] Question schedule error: \(error)") }
+                    }
+                    self.center.add(eRequest) { error in
+                        if let error { print("[NotificationManager] Expiration schedule error: \(error)") }
                     }
                 }
             }
@@ -154,11 +161,11 @@ final class NotificationManager {
         deliveredAt: Date
     ) -> (UNNotificationRequest, UNNotificationRequest, UNNotificationCategory) {
 
-        // --- Category (per-question, keyed by question ID) ---
-        let actions = question.choices.map {
-            UNNotificationAction(identifier: $0, title: $0, options: [])
+        // Per-question category: action titles are the actual answer strings
+        let categoryID = questionCategoryID(question.id)
+        let actions = question.choices.enumerated().map { i, choice in
+            UNNotificationAction(identifier: answerActionID(i), title: choice, options: [])
         }
-        let categoryID = "Q-\(question.id)"
         let category = UNNotificationCategory(
             identifier: categoryID,
             actions: actions,
@@ -166,18 +173,19 @@ final class NotificationManager {
             options: []
         )
 
-        // --- Question notification ---
+        // Question notification
         let qContent = UNMutableNotificationContent()
         qContent.title = "NotiTrivia"
         qContent.body = question.question
         qContent.sound = .default
         qContent.categoryIdentifier = categoryID
-        // Embed everything needed to reconstruct QuestionState on delivery
+        // choices array lets the handler map answer_N → actual answer text
         qContent.userInfo = [
             "slot": slot.rawValue,
             "questionID": question.id,
             "correctAnswer": question.correct,
-            "deliveredAt": deliveredAt.timeIntervalSince1970
+            "deliveredAt": deliveredAt.timeIntervalSince1970,
+            "choices": question.choices
         ]
 
         let qTrigger = UNCalendarNotificationTrigger(
@@ -193,7 +201,7 @@ final class NotificationManager {
             trigger: qTrigger
         )
 
-        // --- Expiration notification (fires 1 hour after delivery) ---
+        // Expiration notification (fires 1 hour after delivery)
         let expiresAt = deliveredAt.addingTimeInterval(3600)
         let eContent = UNMutableNotificationContent()
         eContent.title = "⏰ Time Expired"
@@ -219,6 +227,85 @@ final class NotificationManager {
         )
 
         return (qRequest, eRequest, category)
+    }
+
+    // MARK: - Test Notification
+
+    /// Fires a real question notification in 5 seconds for testing.
+    /// Registers the per-question category first, then schedules — no race condition.
+    /// Expiration fires 65 seconds after delivery for quick testing of the expiration path.
+    func sendTestNotification(completion: @escaping (Bool) -> Void = { _ in }) {
+        guard let question = QuestionEngine.shared.selectAndReserve() else {
+            print("[NotificationManager] No questions available for test")
+            completion(false)
+            return
+        }
+
+        let deliveredAt = Date().addingTimeInterval(5)
+        let categoryID = questionCategoryID(question.id)
+
+        // Build per-question category with real answer titles
+        let actions = question.choices.enumerated().map { i, choice in
+            UNNotificationAction(identifier: answerActionID(i), title: choice, options: [])
+        }
+        let category = UNNotificationCategory(
+            identifier: categoryID,
+            actions: actions,
+            intentIdentifiers: [],
+            options: []
+        )
+
+        let qContent = UNMutableNotificationContent()
+        qContent.title = "NotiTrivia"
+        qContent.body = question.question
+        qContent.sound = .default
+        qContent.categoryIdentifier = categoryID
+        qContent.userInfo = [
+            "slot": Slot.noon.rawValue,
+            "questionID": question.id,
+            "correctAnswer": question.correct,
+            "deliveredAt": deliveredAt.timeIntervalSince1970,
+            "choices": question.choices
+        ]
+
+        let eContent = UNMutableNotificationContent()
+        eContent.title = "⏰ Time Expired"
+        eContent.body = "The correct answer was: \(question.correct)"
+        eContent.sound = .default
+        eContent.userInfo = [
+            "slot": Slot.noon.rawValue,
+            "isExpiration": true,
+            "deliveredAt": deliveredAt.timeIntervalSince1970
+        ]
+
+        let qRequest = UNNotificationRequest(
+            identifier: "test-question-\(question.id)",
+            content: qContent,
+            trigger: UNTimeIntervalNotificationTrigger(timeInterval: 5, repeats: false)
+        )
+        let eRequest = UNNotificationRequest(
+            identifier: "test-expiration-\(question.id)",
+            content: eContent,
+            trigger: UNTimeIntervalNotificationTrigger(timeInterval: 65, repeats: false)
+        )
+
+        // Register category first, then schedule — guarantees category exists before delivery
+        center.getNotificationCategories { [weak self] existing in
+            guard let self else { return }
+            var updated = existing
+            updated.insert(category)
+            self.center.setNotificationCategories(updated)
+
+            self.center.add(qRequest) { error in
+                if let error {
+                    print("[NotificationManager] Test question error: \(error)")
+                    completion(false)
+                } else {
+                    completion(true)
+                }
+            }
+            self.center.add(eRequest) { _ in }
+        }
     }
 
     // MARK: - Expiration Cancellation
@@ -248,9 +335,7 @@ final class NotificationManager {
             content.body = "The correct answer was: \(correctAnswer)"
         }
 
-        // 1-second minimum interval for local notifications
         let trigger = UNTimeIntervalNotificationTrigger(timeInterval: 1, repeats: false)
-
         let request = UNNotificationRequest(
             identifier: NotifID.result(),
             content: content,

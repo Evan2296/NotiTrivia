@@ -63,12 +63,25 @@ final class NotificationActionHandler: NSObject, UNUserNotificationCenterDelegat
         else { return }
 
         let deliveredAt = Date(timeIntervalSince1970: deliveredAtInterval)
-        let answer = response.actionIdentifier
+        let actionID = response.actionIdentifier
 
         // Ignore dismiss / body tap with no answer selected
-        guard answer != UNNotificationDefaultActionIdentifier,
-              answer != UNNotificationDismissActionIdentifier,
-              !answer.isEmpty else { return }
+        guard actionID != UNNotificationDefaultActionIdentifier,
+              actionID != UNNotificationDismissActionIdentifier,
+              !actionID.isEmpty else { return }
+
+        // Map positional action identifier (answer_N) → actual answer string via choices array
+        let answer: String
+        if actionID.hasPrefix("answer_"),
+           let indexStr = actionID.split(separator: "_").last,
+           let index = Int(indexStr),
+           let choices = userInfo["choices"] as? [String],
+           index < choices.count {
+            answer = choices[index]
+        } else {
+            // Fallback: use the identifier directly (handles any legacy or test cases)
+            answer = actionID
+        }
 
         // Evaluate the answer
         if let outcome = engine.evaluate(answer: answer, slot: slot) {
@@ -97,6 +110,9 @@ final class NotificationActionHandler: NSObject, UNUserNotificationCenterDelegat
             streak: streak,
             correctAnswer: correctAnswer
         )
+
+        // Notify the UI that streak may have changed
+        NotificationCenter.default.post(name: .streakDidChange, object: nil)
     }
 
     // MARK: - Re-show Result

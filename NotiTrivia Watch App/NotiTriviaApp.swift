@@ -20,8 +20,9 @@ struct NotiTrivia_Watch_AppApp: App {
         // Set the delegate first — must happen before any notifications fire
         UNUserNotificationCenter.current().delegate = NotificationActionHandler.shared
 
-        // Request permission and fill the notification schedule.
-        // Categories are registered inside refillSchedule as part of the batched flow.
+        // Register fixed answer categories first — must exist before any notification fires.
+        // Then request permission and fill the schedule.
+        NotificationManager.shared.registerCategories()
         NotificationManager.shared.requestPermission()
         NotificationManager.shared.refillSchedule()
     }
