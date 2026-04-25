@@ -18,7 +18,6 @@ final class StreakManager {
             streak.currentStreak = 0
         }
 
-        streak.lastUpdated = Date()
         store.saveStreak(streak)
     }
 

@@ -262,13 +262,16 @@ final class NotificationManager {
         qContent.body = question.question
         qContent.sound = .default
         qContent.categoryIdentifier = categoryID
+        let expirationID = "test-expiration-\(question.id)"
+
         qContent.userInfo = [
             "slot": Slot.noon.rawValue,
             "questionID": question.id,
             "correctAnswer": question.correct,
             "deliveredAt": deliveredAt.timeIntervalSince1970,
             "choices": question.choices,
-            "isPractice": true
+            "isPractice": true,
+            "expirationID": expirationID
         ]
 
         let eContent = UNMutableNotificationContent()
@@ -288,7 +291,7 @@ final class NotificationManager {
             trigger: UNTimeIntervalNotificationTrigger(timeInterval: 5, repeats: false)
         )
         let eRequest = UNNotificationRequest(
-            identifier: "test-expiration-\(question.id)",
+            identifier: expirationID,
             content: eContent,
             trigger: UNTimeIntervalNotificationTrigger(timeInterval: 65, repeats: false)
         )

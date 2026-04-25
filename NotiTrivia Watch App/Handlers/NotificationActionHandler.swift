@@ -107,6 +107,12 @@ final class NotificationActionHandler: NSObject, UNUserNotificationCenterDelegat
 
         guard let correctAnswer = userInfo["correctAnswer"] as? String else { return }
 
+        // Cancel the paired practice expiration notification so it doesn't fire on the
+        // next app launch after the user has already answered this practice question.
+        if let expirationID = userInfo["expirationID"] as? String {
+            UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: [expirationID])
+        }
+
         let answer = resolveAnswer(actionID: actionID, userInfo: userInfo)
         let outcome: Outcome = answer == correctAnswer ? .correct : .incorrect
 
