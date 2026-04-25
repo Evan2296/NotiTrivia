@@ -45,6 +45,21 @@ final class QuestionEngine {
         return question
     }
 
+    /// Picks a question from the lowest times_used pool at random WITHOUT incrementing usage.
+    /// Used for practice questions so they don't consume from the real question rotation.
+    func selectWithoutReserving() -> Question? {
+        guard !questions.isEmpty else { return nil }
+
+        let usageMap = store.loadUsageMap()
+
+        let minCount = questions
+            .map { usageMap[$0.id] ?? $0.times_used }
+            .min() ?? 0
+
+        let pool = questions.filter { (usageMap[$0.id] ?? $0.times_used) == minCount }
+        return pool.randomElement()
+    }
+
     // MARK: - Activation (called at delivery time)
 
     /// Writes QuestionState for a slot from the notification's userInfo payload.

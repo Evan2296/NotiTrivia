@@ -44,8 +44,9 @@ final class NotificationManager {
     private let center = UNUserNotificationCenter.current()
 
     /// How many future question slots to keep scheduled per slot type.
-    /// 32 noon + 32 evening = 64 total (system maximum for pending notifications).
-    private let targetScheduledCount = 32
+    /// 28 noon + 28 evening = 56 total, leaving 8 slots free as a buffer
+    /// for result and expiration notifications (system maximum is 64).
+    private let targetScheduledCount = 28
 
     /// Safety cap: max loop iterations in refillSchedule to prevent infinite loops.
     private let maxFillIterations = 200
@@ -235,8 +236,9 @@ final class NotificationManager {
     /// Registers the per-question category first, then schedules — no race condition.
     /// Expiration fires 65 seconds after delivery for quick testing of the expiration path.
     func sendTestNotification(completion: @escaping (Bool) -> Void = { _ in }) {
-        guard let question = QuestionEngine.shared.selectAndReserve() else {
-            print("[NotificationManager] No questions available for test")
+        // Use selectWithoutReserving so practice questions don't consume the real rotation
+        guard let question = QuestionEngine.shared.selectWithoutReserving() else {
+            print("[NotificationManager] No questions available for practice")
             completion(false)
             return
         }
@@ -265,7 +267,8 @@ final class NotificationManager {
             "questionID": question.id,
             "correctAnswer": question.correct,
             "deliveredAt": deliveredAt.timeIntervalSince1970,
-            "choices": question.choices
+            "choices": question.choices,
+            "isPractice": true
         ]
 
         let eContent = UNMutableNotificationContent()
@@ -275,6 +278,7 @@ final class NotificationManager {
         eContent.userInfo = [
             "slot": Slot.noon.rawValue,
             "isExpiration": true,
+            "isPractice": true,
             "deliveredAt": deliveredAt.timeIntervalSince1970
         ]
 
@@ -319,17 +323,20 @@ final class NotificationManager {
     // MARK: - Result Notification
 
     /// Sends an immediate result notification after an answer is evaluated.
-    func sendResultNotification(outcome: Outcome, streak: Int, correctAnswer: String) {
+    /// When `isPractice` is true, streak info is omitted from the result message.
+    func sendResultNotification(outcome: Outcome, streak: Int, correctAnswer: String, isPractice: Bool = false) {
         let content = UNMutableNotificationContent()
         content.sound = .default
 
         switch outcome {
         case .correct:
             content.title = "✅ Correct!"
-            content.body = "🔥 Streak: \(streak)"
+            content.body = isPractice ? "Nice work! (Practice — streak unchanged)" : "🔥 Streak: \(streak)"
         case .incorrect:
             content.title = "❌ Incorrect"
-            content.body = "The correct answer was: \(correctAnswer)\nStreak reset."
+            content.body = isPractice
+                ? "The correct answer was: \(correctAnswer)\n(Practice — streak unchanged)"
+                : "The correct answer was: \(correctAnswer)\nStreak reset."
         case .expired:
             content.title = "⏰ Time Expired"
             content.body = "The correct answer was: \(correctAnswer)"

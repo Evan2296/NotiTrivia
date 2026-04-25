@@ -47,7 +47,7 @@ struct ContentView: View {
 
                 Divider()
 
-                // MARK: - Test Button
+                // MARK: - Practice Question Button
                 Button {
                     sendTest()
                 } label: {
@@ -55,7 +55,7 @@ struct ContentView: View {
                         switch testButtonState {
                         case .idle:
                             Image(systemName: "bell.badge")
-                            Text("Send Test")
+                            Text("Practice Question")
                         case .sending:
                             ProgressView()
                                 .progressViewStyle(.circular)
