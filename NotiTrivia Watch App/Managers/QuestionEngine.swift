@@ -109,10 +109,9 @@ final class QuestionEngine {
 
         // Check validity window
         if Date() > state.deliveredAt.addingTimeInterval(3600) {
-            // Expired while app was closed — auto-resolve now
-            store.markExpired(slot: slot)
-            StreakManager.shared.handleOutcome(.expired)
-            return nil // Treat as already-expired for the caller (re-show expired result)
+            // Expired while app was closed — return .expired so the caller handles
+            // state mutation and result notification consistently via applyOutcome().
+            return .expired
         }
 
         return answer == state.correctAnswer ? .correct : .incorrect

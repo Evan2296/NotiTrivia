@@ -44,9 +44,9 @@ final class NotificationManager {
     private let center = UNUserNotificationCenter.current()
 
     /// How many future question slots to keep scheduled per slot type.
-    /// 28 noon + 28 evening = 56 total, leaving 8 slots free as a buffer
-    /// for result and expiration notifications (system maximum is 64).
-    private let targetScheduledCount = 28
+    /// 14 noon + 14 evening = 28 question + 28 expiration = 56 total,
+    /// leaving 8 slots free as a buffer for result notifications (system maximum is 64).
+    private let targetScheduledCount = 14
 
     /// Safety cap: max loop iterations in refillSchedule to prevent infinite loops.
     private let maxFillIterations = 200
@@ -61,15 +61,6 @@ final class NotificationManager {
                 print("[NotificationManager] Permission error: \(error)")
             }
         }
-    }
-
-    /// Registers a minimal base category set at launch.
-    /// Per-question categories (with real answer titles) are registered in refillSchedule.
-    func registerCategories() {
-        // Register an empty placeholder so the system knows about our category namespace.
-        // Real per-question categories are added in refillSchedule and sendTestNotification.
-        // This call is intentionally minimal — it just ensures the center is initialized.
-        center.setNotificationCategories([])
     }
 
     // MARK: - Schedule Maintenance

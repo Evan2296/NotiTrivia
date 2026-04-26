@@ -64,7 +64,7 @@ struct ContentView: View {
                         case .sent:
                             Image(systemName: "checkmark.circle.fill")
                                 .foregroundStyle(.green)
-                            Text("Sent! (~5s)")
+                            Text("Sent!")
                         case .failed:
                             Image(systemName: "xmark.circle.fill")
                                 .foregroundStyle(.red)

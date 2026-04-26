@@ -30,6 +30,10 @@ final class NotificationActionHandler: NSObject, UNUserNotificationCenterDelegat
             // Practice questions are intentionally excluded: they must not write to a real
             // slot's QuestionState, which would clobber an active real question.
             engine.activateQuestion(from: userInfo)
+
+            // Self-refill: top up the schedule whenever a real question fires so the
+            // buffer stays full without requiring the user to open the app.
+            notificationManager.refillSchedule()
         }
 
         completionHandler([.banner, .sound])
@@ -65,6 +69,10 @@ final class NotificationActionHandler: NSObject, UNUserNotificationCenterDelegat
         // (covers the case where the app was not open when the notification was delivered)
         engine.activateQuestion(from: userInfo)
 
+        // Self-refill: top up the schedule on every real question interaction so the
+        // buffer stays full even when the app is never opened directly.
+        notificationManager.refillSchedule()
+
         // Extract slot and deliveredAt
         guard
             let slotRaw = userInfo["slot"] as? String,
@@ -84,11 +92,13 @@ final class NotificationActionHandler: NSObject, UNUserNotificationCenterDelegat
         let answer = resolveAnswer(actionID: actionID, userInfo: userInfo)
 
         // Evaluate the answer (uses QuestionState + validity window)
+        // evaluate() returns .expired if the question timed out while the app was closed.
+        // In all non-nil cases, applyOutcome handles state mutation + result notification.
+        let correctAnswer = userInfo["correctAnswer"] as? String ?? ""
         if let outcome = engine.evaluate(answer: answer, slot: slot) {
-            // First valid response — apply outcome
-            applyOutcome(outcome, slot: slot, deliveredAt: deliveredAt, isPractice: false)
+            applyOutcome(outcome, slot: slot, deliveredAt: deliveredAt, correctAnswer: correctAnswer)
         } else {
-            // Already answered, expired, or auto-expired during evaluate — re-show result
+            // Already answered or already expired — re-show the stored result
             reshowResult(slot: slot)
         }
     }
@@ -127,28 +137,25 @@ final class NotificationActionHandler: NSObject, UNUserNotificationCenterDelegat
 
     // MARK: - Outcome Application
 
-    private func applyOutcome(_ outcome: Outcome, slot: Slot, deliveredAt: Date, isPractice: Bool = false) {
+    /// Applies a resolved outcome: persists state, updates streak, cancels expiration,
+    /// and sends the result notification. correctAnswer is passed directly from userInfo
+    /// to avoid an async read-after-write race with the store.
+    private func applyOutcome(_ outcome: Outcome, slot: Slot, deliveredAt: Date, correctAnswer: String) {
         store.markAnswered(slot: slot, outcome: outcome)
-
-        // Practice questions do not affect the streak
-        if !isPractice {
-            streakManager.handleOutcome(outcome)
-        }
+        streakManager.handleOutcome(outcome)
 
         // Cancel the paired expiration notification — no longer needed
         notificationManager.cancelExpirationNotification(slot: slot, deliveredAt: deliveredAt)
 
-        let correctAnswer = store.loadActiveQuestion(slot: slot)?.correctAnswer ?? ""
         let streak = streakManager.currentStreak()
 
         notificationManager.sendResultNotification(
             outcome: outcome,
             streak: streak,
-            correctAnswer: correctAnswer,
-            isPractice: isPractice
+            correctAnswer: correctAnswer
         )
 
-        // Notify the UI that streak may have changed (no-op for practice, but harmless)
+        // Notify the UI that streak may have changed
         NotificationCenter.default.post(name: .streakDidChange, object: nil)
     }
 
@@ -174,14 +181,9 @@ final class NotificationActionHandler: NSObject, UNUserNotificationCenterDelegat
                 correctAnswer: state.correctAnswer
             )
         case .active:
-            // evaluate() auto-expired and mutated state to .expired — re-read and re-show
-            if let updated = engine.currentState(slot: slot), case .expired = updated.status {
-                notificationManager.sendResultNotification(
-                    outcome: .expired,
-                    streak: streak,
-                    correctAnswer: updated.correctAnswer
-                )
-            }
+            // Should not normally reach here — evaluate() now returns .expired directly
+            // for timed-out questions rather than mutating state and returning nil.
+            break
         }
     }
 
