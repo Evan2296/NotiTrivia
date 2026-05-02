@@ -14,65 +14,53 @@ struct ContentView: View {
     }
 
     var body: some View {
-        ScrollView {
-            VStack(spacing: 14) {
+        VStack(spacing: 10) {
 
-                // MARK: - Header
-                Text("NotiTrivia")
-                    .font(.headline)
-                    .foregroundStyle(.primary)
-
-                Divider()
-
-                // MARK: - Streak
-                VStack(spacing: 4) {
-                    Text("🔥 Streak")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    Text("\(streak)")
-                        .font(.system(size: 36, weight: .bold, design: .rounded))
-                        .foregroundStyle(.orange)
-                    Text("Best: \(bestStreak)")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                }
-
-                Divider()
-
-                // MARK: - Practice Question Button
-                Button {
-                    sendTest()
-                } label: {
-                    HStack(spacing: 6) {
-                        switch testButtonState {
-                        case .idle:
-                            Image(systemName: "bell.badge")
-                            Text("Practice Question")
-                        case .sending:
-                            ProgressView()
-                                .progressViewStyle(.circular)
-                                .scaleEffect(0.7)
-                            Text("Sending…")
-                        case .sent:
-                            Image(systemName: "checkmark.circle.fill")
-                                .foregroundStyle(.green)
-                            Text("Sent!")
-                        case .failed:
-                            Image(systemName: "xmark.circle.fill")
-                                .foregroundStyle(.red)
-                            Text("Failed")
-                        }
-                    }
-                    .font(.footnote)
-                }
-                .buttonStyle(.borderedProminent)
-                .tint(testButtonState == .sent ? .green : .blue)
-                .disabled(testButtonState == .sending)
-
+            // MARK: - Streak
+            VStack(spacing: 4) {
+                Text("🔥 Streak")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Text("\(streak)")
+                    .font(.system(size: 36, weight: .bold, design: .rounded))
+                    .foregroundStyle(.orange)
+                Text("Best: \(bestStreak)")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
             }
-            .padding(.horizontal, 8)
-            .padding(.vertical, 12)
+
+            // MARK: - Practice Question Button
+            Button {
+                sendTest()
+            } label: {
+                HStack(spacing: 6) {
+                    switch testButtonState {
+                    case .idle:
+                        Image(systemName: "bell.badge")
+                        Text("Practice Question")
+                    case .sending:
+                        ProgressView()
+                            .progressViewStyle(.circular)
+                            .scaleEffect(0.7)
+                        Text("Sending…")
+                    case .sent:
+                        Image(systemName: "checkmark.circle.fill")
+                            .foregroundStyle(.green)
+                        Text("Sent!")
+                    case .failed:
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundStyle(.red)
+                        Text("Failed")
+                    }
+                }
+                .font(.footnote)
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(testButtonState == .sent ? .green : .blue)
+            .disabled(testButtonState == .sending)
+
         }
+        .padding(.horizontal, 8)
         .onAppear { refresh() }
         // Refresh when app comes back to foreground
         .onReceive(NotificationCenter.default.publisher(for: WKExtension.applicationDidBecomeActiveNotification)) { _ in
