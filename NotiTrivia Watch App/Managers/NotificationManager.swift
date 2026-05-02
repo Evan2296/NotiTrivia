@@ -78,7 +78,7 @@ final class NotificationManager {
     /// TESTING KNOB: when non-nil, schedules real questions every N minutes (alternating
     /// noon/evening slots) instead of at 12:00 and 18:00 daily. Set to `nil` for production.
     /// Expiration windows automatically shorten to fit inside the interval.
-    private let testModeIntervalMinutes: Int? = 20
+    private let testModeIntervalMinutes: Int? = nil
 
     /// How long after delivery a question stays answerable before the expiration notification
     /// fires. Production = 1 hour. In test mode, fits inside the interval (interval - 5min).
