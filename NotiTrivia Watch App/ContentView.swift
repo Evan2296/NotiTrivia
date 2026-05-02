@@ -35,18 +35,6 @@ struct ContentView: View {
 
                 Divider()
 
-                // MARK: - Scheduled Count
-                VStack(spacing: 4) {
-                    Text("Scheduled")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    Text("\(scheduledCount) questions")
-                        .font(.footnote)
-                        .foregroundStyle(.primary)
-                }
-
-                Divider()
-
                 // MARK: - Practice Question Button
                 Button {
                     sendTest()
