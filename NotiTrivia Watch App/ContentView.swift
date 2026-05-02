@@ -5,6 +5,7 @@ import WatchKit
 struct ContentView: View {
 
     @State private var streak: Int = 0
+    @State private var bestStreak: Int = 0
     @State private var scheduledCount: Int = 0
     @State private var testButtonState: TestButtonState = .idle
 
@@ -31,6 +32,9 @@ struct ContentView: View {
                     Text("\(streak)")
                         .font(.system(size: 36, weight: .bold, design: .rounded))
                         .foregroundStyle(.orange)
+                    Text("Best: \(bestStreak)")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
                 }
 
                 Divider()
@@ -76,7 +80,10 @@ struct ContentView: View {
         }
         // Refresh streak immediately after an answer is processed
         .onReceive(NotificationCenter.default.publisher(for: .streakDidChange)) { _ in
-            DispatchQueue.main.async { streak = StreakManager.shared.currentStreak() }
+            DispatchQueue.main.async {
+                streak = StreakManager.shared.currentStreak()
+                bestStreak = StreakManager.shared.bestStreak()
+            }
         }
     }
 
@@ -84,6 +91,7 @@ struct ContentView: View {
 
     private func refresh() {
         streak = StreakManager.shared.currentStreak()
+        bestStreak = StreakManager.shared.bestStreak()
         loadScheduledCount()
     }
 

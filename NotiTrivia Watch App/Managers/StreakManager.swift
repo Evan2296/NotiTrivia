@@ -14,6 +14,9 @@ final class StreakManager {
         switch outcome {
         case .correct:
             streak.currentStreak += 1
+            if streak.currentStreak > streak.bestStreak {
+                streak.bestStreak = streak.currentStreak
+            }
         case .incorrect, .expired:
             streak.currentStreak = 0
         }
@@ -24,5 +27,10 @@ final class StreakManager {
     /// Returns the current streak count.
     func currentStreak() -> Int {
         store.loadStreak().currentStreak
+    }
+
+    /// Returns the best streak count ever recorded.
+    func bestStreak() -> Int {
+        store.loadStreak().bestStreak
     }
 }
