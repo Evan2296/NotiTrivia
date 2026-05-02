@@ -1,6 +1,6 @@
 import Foundation
 
-struct StreakState: Codable {
+nonisolated struct StreakState: Codable {
     var currentStreak: Int
 
     static var initial: StreakState {

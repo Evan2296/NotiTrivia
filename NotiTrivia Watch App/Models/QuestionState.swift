@@ -1,17 +1,23 @@
 import Foundation
 
-enum Slot: String, Codable {
+// These models are persisted via JSON encode/decode on a background queue
+// (see StateStore). Marking them `nonisolated` keeps their synthesized
+// Codable conformances usable from any actor under Swift 6's default
+// main-actor isolation setting.
+
+nonisolated enum Slot: String, Codable {
     case noon
     case evening
 }
 
-enum Outcome: String, Codable {
+nonisolated enum Outcome: String, Codable {
     case correct
     case incorrect
     case expired
 }
 
-enum QuestionStatus: Codable {
+nonisolated enum QuestionStatus: Codable {
+
     case active
     case answered(Outcome)
     case expired
@@ -56,7 +62,7 @@ enum QuestionStatus: Codable {
     }
 }
 
-struct QuestionState: Codable {
+nonisolated struct QuestionState: Codable {
     let questionID: String
     let slot: Slot
     let deliveredAt: Date

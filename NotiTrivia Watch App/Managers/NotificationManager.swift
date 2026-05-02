@@ -12,6 +12,14 @@ enum NotifID {
         "expiration-\(slot.rawValue)-\(dateTag(date))"
     }
 
+    static func category(slot: Slot, date: Date) -> String {
+        "question-cat-\(slot.rawValue)-\(dateTag(date))"
+    }
+
+    static func practiceCategory(questionID: String) -> String {
+        "practice-cat-\(questionID)"
+    }
+
     static func result() -> String {
         "result-\(UUID().uuidString)"
     }
@@ -29,23 +37,26 @@ enum NotifID {
 }
 
 // MARK: - Question Category
-
-/// watchOS renders action button titles from the registered UNNotificationCategory, not from
-/// the notification content. To show real answer text on the buttons, the category must be
-/// built with the actual choices for the current question and registered before delivery.
-///
-/// To stay well under the watchOS 100-category cap, we keep exactly ONE category registered
-/// at any time. Each new question replaces the previous category entirely.
-let sharedQuestionCategoryID = "question_answer_category"
+//
+// watchOS renders action button titles from the registered UNNotificationCategory, not from
+// the notification content. Because real questions are scheduled hours/days in advance and
+// can be delivered while the app is suspended, the category for each scheduled question must
+// be registered with its real answer titles AT SCHEDULING TIME — there is no later opportunity
+// to inject titles before the system renders the buttons.
+//
+// We therefore register one category PER pending question (plus one for practice). With a
+// 7-day buffer × 2 slots = 14 question categories + 1 practice, we stay well under the
+// watchOS 100-category cap. `refillSchedule` prunes stale categories whose notifications are
+// no longer pending so the count cannot drift upward over time.
 
 func answerActionID(_ index: Int) -> String { "answer_\(index)" }
 
-func makeQuestionCategory(choices: [String]) -> UNNotificationCategory {
+func makeQuestionCategory(identifier: String, choices: [String]) -> UNNotificationCategory {
     let actions = choices.enumerated().map { i, choice in
         UNNotificationAction(identifier: answerActionID(i), title: choice, options: [])
     }
     return UNNotificationCategory(
-        identifier: sharedQuestionCategoryID,
+        identifier: identifier,
         actions: actions,
         intentIdentifiers: [],
         options: []
@@ -64,7 +75,22 @@ final class NotificationManager {
     private let targetScheduledCount = 7
     private let maxFillIterations = 200
 
+    /// TESTING KNOB: when non-nil, schedules real questions every N minutes (alternating
+    /// noon/evening slots) instead of at 12:00 and 18:00 daily. Set to `nil` for production.
+    /// Expiration windows automatically shorten to fit inside the interval.
+    private let testModeIntervalMinutes: Int? = 20
+
+    /// How long after delivery a question stays answerable before the expiration notification
+    /// fires. Production = 1 hour. In test mode, fits inside the interval (interval - 5min).
+    private var expirationWindowSeconds: TimeInterval {
+        if let interval = testModeIntervalMinutes {
+            return TimeInterval(max(60, interval * 60 - 300))
+        }
+        return 3600
+    }
+
     private init() {}
+
 
     // MARK: - Setup
 
@@ -76,12 +102,31 @@ final class NotificationManager {
         }
     }
 
-    /// Clears all stale categories and registers a fresh placeholder category at launch.
-    /// The placeholder is replaced with real answer titles each time a question is scheduled.
-    func registerSharedCategory() {
-        // Replace the entire set so stale per-question categories from old builds are wiped.
-        center.setNotificationCategories([makeQuestionCategory(choices: [])])
-        print("[NotificationManager] Category set cleared at launch")
+    // MARK: - Category Registration Helpers
+
+    /// Adds (or replaces) a single category in the system's registered set without disturbing
+    /// any other registered categories. `setNotificationCategories` is a full overwrite, so we
+    /// must merge with the existing set every time.
+    private func registerCategory(_ category: UNNotificationCategory) {
+        center.getNotificationCategories { [weak self] existing in
+            guard let self else { return }
+            var merged = existing.filter { $0.identifier != category.identifier }
+            merged.insert(category)
+            self.center.setNotificationCategories(merged)
+        }
+    }
+
+    /// Synchronously-style merge for an arbitrary set of categories, preserving everything
+    /// else. Used by `refillSchedule` after a batch of new questions is scheduled.
+    private func registerCategories(_ categories: [UNNotificationCategory]) {
+        guard !categories.isEmpty else { return }
+        center.getNotificationCategories { [weak self] existing in
+            guard let self else { return }
+            let newIDs = Set(categories.map(\.identifier))
+            var merged = existing.filter { !newIDs.contains($0.identifier) }
+            for c in categories { merged.insert(c) }
+            self.center.setNotificationCategories(merged)
+        }
     }
 
     // MARK: - Schedule Maintenance
@@ -93,51 +138,40 @@ final class NotificationManager {
             guard let self else { return }
 
             let pendingIDs = Set(pending.map(\.identifier))
-            let calendar = Calendar.current
             let now = Date()
             var requestsToSchedule: [(UNNotificationRequest, UNNotificationRequest)] = []
+            var newCategories: [UNNotificationCategory] = []
 
-            for slot in [Slot.noon, Slot.evening] {
-                let hour = slot == .noon ? 12 : 18
-                let alreadyScheduled = pending.filter {
-                    $0.identifier.hasPrefix("question-\(slot.rawValue)-")
-                }.count
+            // Generate the list of (slot, deliveryDate) candidates we'd ideally have queued.
+            let candidates = self.upcomingCandidates(now: now)
+            // Total slots already scheduled across all slot types.
+            let totalScheduled = pending.filter { $0.identifier.hasPrefix("question-") }.count
+            var needed = max(0, (candidates.count) - totalScheduled)
 
-                let needed = self.targetScheduledCount - alreadyScheduled
-                guard needed > 0 else { continue }
+            var iterations = 0
+            for (slot, candidate) in candidates {
+                guard needed > 0, iterations < self.maxFillIterations else { break }
+                iterations += 1
+                let qID = NotifID.question(slot: slot, date: candidate)
+                guard !pendingIDs.contains(qID) else { continue }
 
-                var components = calendar.dateComponents([.year, .month, .day], from: now)
-                components.hour = hour
-                components.minute = 0
-                components.second = 0
+                guard let question = QuestionEngine.shared.selectAndReserve() else { break }
 
-                guard var candidate = calendar.date(from: components) else { continue }
-                if candidate <= now {
-                    candidate = calendar.date(byAdding: .day, value: 1, to: candidate) ?? candidate
-                }
-
-                var filled = 0
-                var iterations = 0
-
-                while filled < needed && iterations < self.maxFillIterations {
-                    iterations += 1
-                    let qID = NotifID.question(slot: slot, date: candidate)
-
-                    if !pendingIDs.contains(qID), let question = QuestionEngine.shared.selectAndReserve() {
-                        let (qRequest, eRequest) = self.buildRequests(
-                            slot: slot,
-                            question: question,
-                            deliveredAt: candidate
-                        )
-                        requestsToSchedule.append((qRequest, eRequest))
-                        filled += 1
-                    } else if !pendingIDs.contains(qID) {
-                        break
-                    }
-
-                    candidate = calendar.date(byAdding: .day, value: 1, to: candidate) ?? candidate
-                }
+                let (qRequest, eRequest, category) = self.buildRequests(
+                    slot: slot,
+                    question: question,
+                    deliveredAt: candidate
+                )
+                requestsToSchedule.append((qRequest, eRequest))
+                newCategories.append(category)
+                needed -= 1
             }
+
+            // Register new categories BEFORE adding the notification requests so they are
+            // committed by the time the system needs them. We also prune any stale
+            // question-cat-* categories whose notifications are no longer pending.
+            self.commitCategories(addingNew: newCategories, currentlyPending: pending)
+
 
             guard !requestsToSchedule.isEmpty else { return }
 
@@ -153,21 +187,119 @@ final class NotificationManager {
         }
     }
 
+    /// Generates the ordered list of upcoming (slot, deliveryDate) pairs we want pending in
+    /// the system, in delivery order. In production this is `targetScheduledCount` future
+    /// noon firings followed by `targetScheduledCount` future evening firings. In test mode
+    /// it produces `targetScheduledCount * 2` total firings spaced `testModeIntervalMinutes`
+    /// apart, alternating between noon and evening slots.
+    private func upcomingCandidates(now: Date) -> [(Slot, Date)] {
+        let calendar = Calendar.current
+
+        if let interval = self.testModeIntervalMinutes {
+            let intervalSeconds = TimeInterval(interval * 60)
+            // Round up to the next interval boundary, with at least 30s lead time.
+            let secondsSinceEpoch = now.timeIntervalSince1970
+            var nextBoundary = ceil(secondsSinceEpoch / intervalSeconds) * intervalSeconds
+            if nextBoundary - secondsSinceEpoch < 30 { nextBoundary += intervalSeconds }
+
+            let total = self.targetScheduledCount * 2
+            let slots: [Slot] = [.noon, .evening]
+            return (0..<total).map { i in
+                let date = Date(timeIntervalSince1970: nextBoundary + Double(i) * intervalSeconds)
+                return (slots[i % slots.count], date)
+            }
+        }
+
+        // Production: noon + evening daily.
+        var result: [(Slot, Date)] = []
+        for slot in [Slot.noon, Slot.evening] {
+            let hour = slot == .noon ? 12 : 18
+            var components = calendar.dateComponents([.year, .month, .day], from: now)
+            components.hour = hour
+            components.minute = 0
+            components.second = 0
+
+            guard var candidate = calendar.date(from: components) else { continue }
+            if candidate <= now {
+                candidate = calendar.date(byAdding: .day, value: 1, to: candidate) ?? candidate
+            }
+            for _ in 0..<self.targetScheduledCount {
+                result.append((slot, candidate))
+                candidate = calendar.date(byAdding: .day, value: 1, to: candidate) ?? candidate
+            }
+        }
+        return result
+    }
+
+    /// Rebuilds the category set: keeps any non-question-cat categories untouched, adds the
+    /// brand-new categories about to be used, and drops `question-cat-*` categories whose
+    /// underlying notification is no longer pending. This keeps us well under the 100-cap
+    /// across long-lived installs.
+    private func commitCategories(
+        addingNew newCategories: [UNNotificationCategory],
+        currentlyPending pending: [UNNotificationRequest]
+    ) {
+        // Compute the set of category ids that are still relevant from currently-pending
+        // requests so that any registered question-cat-* whose notification has fired/been
+        // removed gets pruned.
+        let pendingCategoryIDs: Set<String> = Set(
+            pending.compactMap { req -> String? in
+                let id = req.content.categoryIdentifier
+                return id.isEmpty ? nil : id
+            }
+        )
+        let newCategoryIDs = Set(newCategories.map(\.identifier))
+
+        center.getNotificationCategories { [weak self] existing in
+            guard let self else { return }
+            var merged = Set<UNNotificationCategory>()
+            for c in existing {
+                let id = c.identifier
+                // Drop stale question categories that no longer correspond to a pending
+                // notification AND aren't being re-registered right now.
+                if id.hasPrefix("question-cat-") {
+                    if pendingCategoryIDs.contains(id) || newCategoryIDs.contains(id) {
+                        merged.insert(c)
+                    }
+                    continue
+                }
+                // Practice categories are short-lived; drop any that aren't pending.
+                if id.hasPrefix("practice-cat-") {
+                    if pendingCategoryIDs.contains(id) {
+                        merged.insert(c)
+                    }
+                    continue
+                }
+                // Preserve anything else (system or unrelated).
+                merged.insert(c)
+            }
+            // Insert the new ones (overwriting any same-id entries we already added).
+            for c in newCategories {
+                merged = Set(merged.filter { $0.identifier != c.identifier })
+                merged.insert(c)
+            }
+            self.center.setNotificationCategories(merged)
+        }
+    }
+
     // MARK: - Request Builder
 
-    /// Builds a paired question + expiration request for a given slot and question.
-    /// Both use the shared category; answer text is resolved from userInfo at tap time.
+    /// Builds a paired question + expiration request for a given slot and question, plus the
+    /// per-question category whose action titles the system will display.
     private func buildRequests(
         slot: Slot,
         question: Question,
         deliveredAt: Date
-    ) -> (UNNotificationRequest, UNNotificationRequest) {
+    ) -> (UNNotificationRequest, UNNotificationRequest, UNNotificationCategory) {
+
+        let categoryID = NotifID.category(slot: slot, date: deliveredAt)
+        let category = makeQuestionCategory(identifier: categoryID, choices: question.choices)
 
         let qContent = UNMutableNotificationContent()
         qContent.title = "NotiTrivia"
         qContent.body = question.question
         qContent.sound = .default
-        qContent.categoryIdentifier = sharedQuestionCategoryID
+        qContent.categoryIdentifier = categoryID
         qContent.userInfo = [
             "slot": slot.rawValue,
             "questionID": question.id,
@@ -186,7 +318,7 @@ final class NotificationManager {
             trigger: qTrigger
         )
 
-        let expiresAt = deliveredAt.addingTimeInterval(3600)
+        let expiresAt = deliveredAt.addingTimeInterval(expirationWindowSeconds)
         let eContent = UNMutableNotificationContent()
         eContent.title = "⏰ Time Expired"
         eContent.body = "The correct answer was: \(question.correct)"
@@ -207,15 +339,15 @@ final class NotificationManager {
             trigger: eTrigger
         )
 
-        return (qRequest, eRequest)
+        return (qRequest, eRequest, category)
     }
 
     // MARK: - Practice Notification
 
     /// Schedules a practice question notification in 5 seconds and a paired expiration in 65 seconds.
-    /// Registers the category with the question's real answer choices immediately before scheduling,
-    /// replacing any previous category so the system always has exactly one registered.
-    /// Practice questions do not affect the real question rotation or the user's streak.
+    /// Registers a unique category for this practice question (so it does not collide with any
+    /// real-question categories) immediately before scheduling. Practice questions do not
+    /// affect the real question rotation or the user's streak.
     func sendTestNotification(completion: @escaping (Bool) -> Void = { _ in }) {
         guard let question = QuestionEngine.shared.selectWithoutReserving() else {
             print("[NotificationManager] No questions available for practice")
@@ -225,12 +357,13 @@ final class NotificationManager {
 
         let deliveredAt = Date().addingTimeInterval(5)
         let expirationID = "test-expiration-\(question.id)"
+        let categoryID = NotifID.practiceCategory(questionID: question.id)
 
         let qContent = UNMutableNotificationContent()
         qContent.title = "NotiTrivia"
         qContent.body = question.question
         qContent.sound = .default
-        qContent.categoryIdentifier = sharedQuestionCategoryID
+        qContent.categoryIdentifier = categoryID
         qContent.userInfo = [
             "slot": Slot.noon.rawValue,
             "questionID": question.id,
@@ -238,7 +371,8 @@ final class NotificationManager {
             "deliveredAt": deliveredAt.timeIntervalSince1970,
             "choices": question.choices,
             "isPractice": true,
-            "expirationID": expirationID
+            "expirationID": expirationID,
+            "categoryID": categoryID
         ]
 
         let eContent = UNMutableNotificationContent()
@@ -249,7 +383,8 @@ final class NotificationManager {
             "slot": Slot.noon.rawValue,
             "isExpiration": true,
             "isPractice": true,
-            "deliveredAt": deliveredAt.timeIntervalSince1970
+            "deliveredAt": deliveredAt.timeIntervalSince1970,
+            "categoryID": categoryID
         ]
 
         let qRequest = UNNotificationRequest(
@@ -263,13 +398,13 @@ final class NotificationManager {
             trigger: UNTimeIntervalNotificationTrigger(timeInterval: 65, repeats: false)
         )
 
-        // Register the category with this question's real answer choices, replacing any
-        // previous category. The 0.3s delay gives the system daemon time to commit the
-        // new category before the notification request is added.
-        let category = makeQuestionCategory(choices: question.choices)
-        center.setNotificationCategories([category])
-        print("[NotificationManager] Category registered with choices: \(question.choices)")
+        // Register this practice question's category (merged with existing categories so we
+        // don't wipe scheduled real-question categories).
+        let category = makeQuestionCategory(identifier: categoryID, choices: question.choices)
+        registerCategory(category)
+        print("[NotificationManager] Practice category \(categoryID) registered with choices: \(question.choices)")
 
+        // Small delay to let the system commit the category before delivery.
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
             self.center.add(qRequest) { error in
                 if let error {
@@ -283,6 +418,17 @@ final class NotificationManager {
             self.center.add(eRequest) { error in
                 if let error { print("[NotificationManager] Practice expiration schedule error: \(error)") }
             }
+        }
+    }
+
+    /// Removes a practice category once the practice flow is fully resolved (answered or
+    /// expired). Safe to call multiple times.
+    func removePracticeCategory(_ categoryID: String) {
+        guard categoryID.hasPrefix("practice-cat-") else { return }
+        center.getNotificationCategories { [weak self] existing in
+            guard let self else { return }
+            let filtered = existing.filter { $0.identifier != categoryID }
+            self.center.setNotificationCategories(filtered)
         }
     }
 

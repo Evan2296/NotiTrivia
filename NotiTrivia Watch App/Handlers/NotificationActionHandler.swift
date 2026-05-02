@@ -25,11 +25,9 @@ final class NotificationActionHandler: NSObject, UNUserNotificationCenterDelegat
         if userInfo["isExpiration"] as? Bool == true {
             handleExpirationDelivery(userInfo: userInfo)
         } else if userInfo["isPractice"] as? Bool != true {
-            // Real question delivered in foreground — re-register the category with this question's
-            // choices so the action buttons show the correct answer text, then activate QuestionState.
-            if let choices = userInfo["choices"] as? [String], !choices.isEmpty {
-                UNUserNotificationCenter.current().setNotificationCategories([makeQuestionCategory(choices: choices)])
-            }
+            // Real question delivered in foreground — its category was already registered with
+            // the correct answer titles at scheduling time, so we just activate QuestionState
+            // and top up the schedule.
             engine.activateQuestion(from: userInfo)
             notificationManager.refillSchedule()
         }
@@ -101,6 +99,12 @@ final class NotificationActionHandler: NSObject, UNUserNotificationCenterDelegat
 
         if let expirationID = userInfo["expirationID"] as? String {
             UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: [expirationID])
+        }
+
+        // Practice flow is resolved — drop the practice-only category to keep the registered
+        // category set tidy.
+        if let categoryID = userInfo["categoryID"] as? String {
+            notificationManager.removePracticeCategory(categoryID)
         }
 
         let answer = resolveAnswer(actionID: actionID, userInfo: userInfo)
