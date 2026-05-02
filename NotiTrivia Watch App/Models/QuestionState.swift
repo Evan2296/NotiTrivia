@@ -1,9 +1,8 @@
 import Foundation
 
-// These models are persisted via JSON encode/decode on a background queue
-// (see StateStore). Marking them `nonisolated` keeps their synthesized
-// Codable conformances usable from any actor under Swift 6's default
-// main-actor isolation setting.
+// Models in this file are JSON-encoded by StateStore on a background queue.
+// `nonisolated` keeps their Codable conformances accessible from any context
+// under Swift 6's strict concurrency model.
 
 nonisolated enum Slot: String, Codable {
     case noon

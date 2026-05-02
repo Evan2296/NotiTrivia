@@ -7,8 +7,7 @@ final class StateStore {
     private let encoder = JSONEncoder()
     private let decoder = JSONDecoder()
 
-    /// Concurrent queue: multiple readers can proceed simultaneously;
-    /// writers use a barrier to get exclusive access.
+    // Concurrent queue allows simultaneous reads; writes use a barrier for exclusive access.
     private let queue = DispatchQueue(label: "com.notitrivia.statestore", attributes: .concurrent)
 
     private init() {}

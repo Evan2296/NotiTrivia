@@ -38,16 +38,10 @@ enum NotifID {
 
 // MARK: - Question Category
 //
-// watchOS renders action button titles from the registered UNNotificationCategory, not from
-// the notification content. Because real questions are scheduled hours/days in advance and
-// can be delivered while the app is suspended, the category for each scheduled question must
-// be registered with its real answer titles AT SCHEDULING TIME — there is no later opportunity
-// to inject titles before the system renders the buttons.
-//
-// We therefore register one category PER pending question (plus one for practice). With a
-// 7-day buffer × 2 slots = 14 question categories + 1 practice, we stay well under the
-// watchOS 100-category cap. `refillSchedule` prunes stale categories whose notifications are
-// no longer pending so the count cannot drift upward over time.
+// watchOS displays action button titles from a registered UNNotificationCategory — NOT from
+// the notification content itself. This means answer choices must be baked into a category
+// at scheduling time (days before delivery). We register one category per scheduled question
+// so each notification has its own unique answer titles.
 
 func answerActionID(_ index: Int) -> String { "answer_\(index)" }
 
@@ -70,18 +64,17 @@ final class NotificationManager {
 
     private let center = UNUserNotificationCenter.current()
 
-    /// Number of future question slots to maintain per slot type (noon + evening).
-    /// 7 × 2 slots = 14 question + 14 expiration = 28 total, well within the system's 64-notification cap.
+    /// How many future questions to keep queued per slot (noon + evening).
+    /// 7 × 2 slots = 14 question + 14 expiration notifications — well within the 64-notification cap.
     private let targetScheduledCount = 7
     private let maxFillIterations = 200
 
-    /// TESTING KNOB: when non-nil, schedules real questions every N minutes (alternating
-    /// noon/evening slots) instead of at 12:00 and 18:00 daily. Set to `nil` for production.
-    /// Expiration windows automatically shorten to fit inside the interval.
-    private let testModeIntervalMinutes: Int? = nil
+    /// Set to a non-nil integer to fire questions every N minutes during testing instead of at 12:00 / 18:00.
+    /// Set to `nil` for production.
+    private let testModeIntervalMinutes: Int? = 45
 
-    /// How long after delivery a question stays answerable before the expiration notification
-    /// fires. Production = 1 hour. In test mode, fits inside the interval (interval - 5min).
+    /// How long after delivery a question stays answerable before the expiration notification fires.
+    /// Production = 1 hour. In test mode, shrinks to fit inside the interval.
     private var expirationWindowSeconds: TimeInterval {
         if let interval = testModeIntervalMinutes {
             return TimeInterval(max(60, interval * 60 - 300))
@@ -102,11 +95,10 @@ final class NotificationManager {
         }
     }
 
-    // MARK: - Category Registration Helpers
+    // MARK: - Category Registration
 
-    /// Adds (or replaces) a single category in the system's registered set without disturbing
-    /// any other registered categories. `setNotificationCategories` is a full overwrite, so we
-    /// must merge with the existing set every time.
+    /// Registers a single category, merging it into the existing set.
+    /// `setNotificationCategories` is a full overwrite, so we must always read-merge-write.
     private func registerCategory(_ category: UNNotificationCategory) {
         center.getNotificationCategories { [weak self] existing in
             guard let self else { return }
@@ -116,23 +108,10 @@ final class NotificationManager {
         }
     }
 
-    /// Synchronously-style merge for an arbitrary set of categories, preserving everything
-    /// else. Used by `refillSchedule` after a batch of new questions is scheduled.
-    private func registerCategories(_ categories: [UNNotificationCategory]) {
-        guard !categories.isEmpty else { return }
-        center.getNotificationCategories { [weak self] existing in
-            guard let self else { return }
-            let newIDs = Set(categories.map(\.identifier))
-            var merged = existing.filter { !newIDs.contains($0.identifier) }
-            for c in categories { merged.insert(c) }
-            self.center.setNotificationCategories(merged)
-        }
-    }
-
     // MARK: - Schedule Maintenance
 
-    /// Fills any gaps in the pending schedule up to `targetScheduledCount` for each slot.
-    /// Safe to call on every app launch and after each question fires.
+    /// Ensures the pending notification queue is topped up to `targetScheduledCount` per slot.
+    /// Safe to call on every app launch and whenever a question is delivered.
     func refillSchedule() {
         center.getPendingNotificationRequests { [weak self] pending in
             guard let self else { return }
@@ -142,9 +121,7 @@ final class NotificationManager {
             var requestsToSchedule: [(UNNotificationRequest, UNNotificationRequest)] = []
             var newCategories: [UNNotificationCategory] = []
 
-            // Generate the list of (slot, deliveryDate) candidates we'd ideally have queued.
             let candidates = self.upcomingCandidates(now: now)
-            // Total slots already scheduled across all slot types.
             let totalScheduled = pending.filter { $0.identifier.hasPrefix("question-") }.count
             var needed = max(0, (candidates.count) - totalScheduled)
 
@@ -167,37 +144,44 @@ final class NotificationManager {
                 needed -= 1
             }
 
-            // Register new categories BEFORE adding the notification requests so they are
-            // committed by the time the system needs them. We also prune any stale
-            // question-cat-* categories whose notifications are no longer pending.
-            self.commitCategories(addingNew: newCategories, currentlyPending: pending)
+            // Categories must be committed before notifications are added. We also check
+            // delivered notifications (still visible in the tray) so their categories aren't
+            // pruned before the user has a chance to tap an answer.
+            self.center.getDeliveredNotifications { delivered in
+                let deliveredCategoryIDs: Set<String> = Set(
+                    delivered.compactMap { n -> String? in
+                        let id = n.request.content.categoryIdentifier
+                        return id.isEmpty ? nil : id
+                    }
+                )
+                self.commitCategories(
+                    addingNew: newCategories,
+                    currentlyPending: pending,
+                    deliveredCategoryIDs: deliveredCategoryIDs
+                )
 
+                guard !requestsToSchedule.isEmpty else { return }
 
-            guard !requestsToSchedule.isEmpty else { return }
-
-            print("[NotificationManager] Scheduling \(requestsToSchedule.count) new question pair(s)")
-            for (qRequest, eRequest) in requestsToSchedule {
-                self.center.add(qRequest) { error in
-                    if let error { print("[NotificationManager] Question schedule error: \(error)") }
-                }
-                self.center.add(eRequest) { error in
-                    if let error { print("[NotificationManager] Expiration schedule error: \(error)") }
+                print("[NotificationManager] Scheduling \(requestsToSchedule.count) new question pair(s)")
+                for (qRequest, eRequest) in requestsToSchedule {
+                    self.center.add(qRequest) { error in
+                        if let error { print("[NotificationManager] Question schedule error: \(error)") }
+                    }
+                    self.center.add(eRequest) { error in
+                        if let error { print("[NotificationManager] Expiration schedule error: \(error)") }
+                    }
                 }
             }
         }
     }
 
-    /// Generates the ordered list of upcoming (slot, deliveryDate) pairs we want pending in
-    /// the system, in delivery order. In production this is `targetScheduledCount` future
-    /// noon firings followed by `targetScheduledCount` future evening firings. In test mode
-    /// it produces `targetScheduledCount * 2` total firings spaced `testModeIntervalMinutes`
-    /// apart, alternating between noon and evening slots.
+    /// Returns the list of (slot, date) delivery times we want to keep queued.
+    /// Production: 7 future noon + 7 future evening dates. Test mode: alternating slots every N minutes.
     private func upcomingCandidates(now: Date) -> [(Slot, Date)] {
         let calendar = Calendar.current
 
         if let interval = self.testModeIntervalMinutes {
             let intervalSeconds = TimeInterval(interval * 60)
-            // Round up to the next interval boundary, with at least 30s lead time.
             let secondsSinceEpoch = now.timeIntervalSince1970
             var nextBoundary = ceil(secondsSinceEpoch / intervalSeconds) * intervalSeconds
             if nextBoundary - secondsSinceEpoch < 30 { nextBoundary += intervalSeconds }
@@ -210,7 +194,7 @@ final class NotificationManager {
             }
         }
 
-        // Production: noon + evening daily.
+        // Production: noon (12:00) and evening (18:00) in the user's local timezone.
         var result: [(Slot, Date)] = []
         for slot in [Slot.noon, Slot.evening] {
             let hour = slot == .noon ? 12 : 18
@@ -231,23 +215,21 @@ final class NotificationManager {
         return result
     }
 
-    /// Rebuilds the category set: keeps any non-question-cat categories untouched, adds the
-    /// brand-new categories about to be used, and drops `question-cat-*` categories whose
-    /// underlying notification is no longer pending. This keeps us well under the 100-cap
-    /// across long-lived installs.
+    /// Rebuilds the registered category set, keeping only categories whose notification is still
+    /// pending or visible in the tray, plus any newly created ones. Prevents unbounded growth.
     private func commitCategories(
         addingNew newCategories: [UNNotificationCategory],
-        currentlyPending pending: [UNNotificationRequest]
+        currentlyPending pending: [UNNotificationRequest],
+        deliveredCategoryIDs: Set<String> = []
     ) {
-        // Compute the set of category ids that are still relevant from currently-pending
-        // requests so that any registered question-cat-* whose notification has fired/been
-        // removed gets pruned.
         let pendingCategoryIDs: Set<String> = Set(
             pending.compactMap { req -> String? in
                 let id = req.content.categoryIdentifier
                 return id.isEmpty ? nil : id
             }
         )
+        // A category is "live" if its notification is pending OR still sitting in the tray.
+        let liveCategoryIDs = pendingCategoryIDs.union(deliveredCategoryIDs)
         let newCategoryIDs = Set(newCategories.map(\.identifier))
 
         center.getNotificationCategories { [weak self] existing in
@@ -255,25 +237,20 @@ final class NotificationManager {
             var merged = Set<UNNotificationCategory>()
             for c in existing {
                 let id = c.identifier
-                // Drop stale question categories that no longer correspond to a pending
-                // notification AND aren't being re-registered right now.
                 if id.hasPrefix("question-cat-") {
-                    if pendingCategoryIDs.contains(id) || newCategoryIDs.contains(id) {
+                    if liveCategoryIDs.contains(id) || newCategoryIDs.contains(id) {
                         merged.insert(c)
                     }
                     continue
                 }
-                // Practice categories are short-lived; drop any that aren't pending.
                 if id.hasPrefix("practice-cat-") {
-                    if pendingCategoryIDs.contains(id) {
+                    if liveCategoryIDs.contains(id) {
                         merged.insert(c)
                     }
                     continue
                 }
-                // Preserve anything else (system or unrelated).
                 merged.insert(c)
             }
-            // Insert the new ones (overwriting any same-id entries we already added).
             for c in newCategories {
                 merged = Set(merged.filter { $0.identifier != c.identifier })
                 merged.insert(c)
@@ -284,8 +261,8 @@ final class NotificationManager {
 
     // MARK: - Request Builder
 
-    /// Builds a paired question + expiration request for a given slot and question, plus the
-    /// per-question category whose action titles the system will display.
+    /// Creates a question notification, its paired expiration notification, and the category
+    /// that holds the answer choice buttons — all tied to the same delivery date.
     private func buildRequests(
         slot: Slot,
         question: Question,
@@ -344,10 +321,8 @@ final class NotificationManager {
 
     // MARK: - Practice Notification
 
-    /// Schedules a practice question notification in 5 seconds and a paired expiration in 65 seconds.
-    /// Registers a unique category for this practice question (so it does not collide with any
-    /// real-question categories) immediately before scheduling. Practice questions do not
-    /// affect the real question rotation or the user's streak.
+    /// Fires a practice question notification in 5 seconds with a paired expiration at 65 seconds.
+    /// Practice questions don't affect the real question rotation or the user's streak.
     func sendTestNotification(completion: @escaping (Bool) -> Void = { _ in }) {
         guard let question = QuestionEngine.shared.selectWithoutReserving() else {
             print("[NotificationManager] No questions available for practice")
@@ -398,13 +373,11 @@ final class NotificationManager {
             trigger: UNTimeIntervalNotificationTrigger(timeInterval: 65, repeats: false)
         )
 
-        // Register this practice question's category (merged with existing categories so we
-        // don't wipe scheduled real-question categories).
         let category = makeQuestionCategory(identifier: categoryID, choices: question.choices)
         registerCategory(category)
         print("[NotificationManager] Practice category \(categoryID) registered with choices: \(question.choices)")
 
-        // Small delay to let the system commit the category before delivery.
+        // Short delay to give the system time to commit the category before the notification fires.
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
             self.center.add(qRequest) { error in
                 if let error {
@@ -421,8 +394,7 @@ final class NotificationManager {
         }
     }
 
-    /// Removes a practice category once the practice flow is fully resolved (answered or
-    /// expired). Safe to call multiple times.
+    /// Deregisters a practice category once the flow is resolved. Safe to call multiple times.
     func removePracticeCategory(_ categoryID: String) {
         guard categoryID.hasPrefix("practice-cat-") else { return }
         center.getNotificationCategories { [weak self] existing in
@@ -434,7 +406,7 @@ final class NotificationManager {
 
     // MARK: - Expiration Cancellation
 
-    /// Removes the pending expiration notification for a slot once the user has answered.
+    /// Cancels the pending expiration notification once the user has answered.
     func cancelExpirationNotification(slot: Slot, deliveredAt: Date) {
         center.removePendingNotificationRequests(
             withIdentifiers: [NotifID.expiration(slot: slot, date: deliveredAt)]
@@ -443,7 +415,7 @@ final class NotificationManager {
 
     // MARK: - Result Notification
 
-    /// Sends an immediate result notification after an answer is evaluated.
+    /// Fires an immediate result notification after an answer is evaluated.
     func sendResultNotification(outcome: Outcome, streak: Int, correctAnswer: String, isPractice: Bool = false) {
         let content = UNMutableNotificationContent()
         content.sound = .default

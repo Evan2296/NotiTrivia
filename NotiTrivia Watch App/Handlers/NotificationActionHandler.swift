@@ -25,9 +25,7 @@ final class NotificationActionHandler: NSObject, UNUserNotificationCenterDelegat
         if userInfo["isExpiration"] as? Bool == true {
             handleExpirationDelivery(userInfo: userInfo)
         } else if userInfo["isPractice"] as? Bool != true {
-            // Real question delivered in foreground — its category was already registered with
-            // the correct answer titles at scheduling time, so we just activate QuestionState
-            // and top up the schedule.
+            // Real question delivered in foreground — activate its state and top up the schedule.
             engine.activateQuestion(from: userInfo)
             notificationManager.refillSchedule()
         }
@@ -37,7 +35,7 @@ final class NotificationActionHandler: NSObject, UNUserNotificationCenterDelegat
 
     // MARK: - Action Response
 
-    /// Called when the user taps an action button or dismisses any notification.
+    /// Called when the user taps an answer button or dismisses a notification.
     func userNotificationCenter(
         _ center: UNUserNotificationCenter,
         didReceive response: UNNotificationResponse,
@@ -57,8 +55,7 @@ final class NotificationActionHandler: NSObject, UNUserNotificationCenterDelegat
             return
         }
 
-        // Real question tapped — ensure QuestionState is active (covers background delivery)
-        // and top up the schedule so the buffer stays full.
+        // Real question tapped — activate state (handles background delivery) and refill the schedule.
         engine.activateQuestion(from: userInfo)
         notificationManager.refillSchedule()
 
@@ -87,7 +84,7 @@ final class NotificationActionHandler: NSObject, UNUserNotificationCenterDelegat
 
     // MARK: - Practice Response
 
-    /// Handles a practice question answer without touching QuestionState or the streak.
+    /// Handles a practice question answer — no effect on QuestionState or the streak.
     private func handlePracticeResponse(response: UNNotificationResponse, userInfo: [AnyHashable: Any]) {
         let actionID = response.actionIdentifier
 
@@ -101,8 +98,6 @@ final class NotificationActionHandler: NSObject, UNUserNotificationCenterDelegat
             UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: [expirationID])
         }
 
-        // Practice flow is resolved — drop the practice-only category to keep the registered
-        // category set tidy.
         if let categoryID = userInfo["categoryID"] as? String {
             notificationManager.removePracticeCategory(categoryID)
         }
@@ -154,8 +149,8 @@ final class NotificationActionHandler: NSObject, UNUserNotificationCenterDelegat
 
     // MARK: - Expiration Delivery
 
-    /// Applies expiration state when the expiration notification fires or is tapped.
-    /// Idempotent — safe to call multiple times. Practice expirations are no-ops.
+    /// Marks a question as expired when the expiration notification fires or is tapped.
+    /// Idempotent — safe to call multiple times. Practice expirations are ignored.
     private func handleExpirationDelivery(userInfo: [AnyHashable: Any]) {
         guard
             let slotRaw = userInfo["slot"] as? String,
@@ -173,7 +168,7 @@ final class NotificationActionHandler: NSObject, UNUserNotificationCenterDelegat
 
     // MARK: - Helpers
 
-    /// Maps a positional action identifier (answer_N) to the actual answer string via the choices array.
+    /// Converts a positional action ID (e.g. "answer_2") back to the answer string using the choices array.
     private func resolveAnswer(actionID: String, userInfo: [AnyHashable: Any]) -> String {
         if actionID.hasPrefix("answer_"),
            let indexStr = actionID.split(separator: "_").last,

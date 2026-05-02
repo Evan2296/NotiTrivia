@@ -23,8 +23,8 @@ final class QuestionEngine {
 
     // MARK: - Selection
 
-    /// Picks a question from the lowest times_used pool at random and increments its usage count.
-    /// Does NOT write QuestionState — that happens at delivery time via activateQuestion().
+    /// Picks a question from the lowest-used pool at random and increments its usage count.
+    /// Use this when scheduling real questions so repeated picks are avoided.
     @discardableResult
     func selectAndReserve() -> Question? {
         guard !questions.isEmpty else { return nil }
@@ -38,15 +38,14 @@ final class QuestionEngine {
         let pool = questions.filter { (usageMap[$0.id] ?? $0.times_used) == minCount }
         guard let question = pool.randomElement() else { return nil }
 
-        // Increment usage immediately so the next call won't pick the same question
         usageMap[question.id] = (usageMap[question.id] ?? question.times_used) + 1
         store.saveUsageMap(usageMap)
 
         return question
     }
 
-    /// Picks a question from the lowest times_used pool at random WITHOUT incrementing usage.
-    /// Used for practice questions so they don't consume from the real question rotation.
+    /// Picks a question from the lowest-used pool WITHOUT incrementing the usage count.
+    /// Used for practice so the real question rotation is unaffected.
     func selectWithoutReserving() -> Question? {
         guard !questions.isEmpty else { return nil }
 
@@ -60,10 +59,10 @@ final class QuestionEngine {
         return pool.randomElement()
     }
 
-    // MARK: - Activation (called at delivery time)
+    // MARK: - Activation
 
     /// Writes QuestionState for a slot from the notification's userInfo payload.
-    /// Called by NotificationActionHandler when a question notification is received.
+    /// Called when a question notification is received (foreground or via tap).
     func activateQuestion(from userInfo: [AnyHashable: Any]) {
         guard
             let slotRaw = userInfo["slot"] as? String,
@@ -75,11 +74,10 @@ final class QuestionEngine {
 
         let deliveredAt = Date(timeIntervalSince1970: deliveredAtInterval)
 
-        // Only activate if there's no existing active state for this slot,
-        // or if the existing state is for a different question (stale from a previous day).
+        // Skip if this question is already active for this slot (idempotent).
         if let existing = store.loadActiveQuestion(slot: slot),
            existing.questionID == questionID {
-            return // Already activated — idempotent
+            return
         }
 
         let state = QuestionState(
@@ -94,30 +92,27 @@ final class QuestionEngine {
 
     // MARK: - Evaluation
 
-    /// Evaluates a user's answer for a given slot.
-    /// - Returns: The Outcome if the question was active, or nil if already answered/expired (idempotent).
+    /// Evaluates the user's answer for the given slot.
+    /// Returns nil if the question has already been answered or expired (caller re-shows the result).
     func evaluate(answer: String, slot: Slot) -> Outcome? {
         guard let state = store.loadActiveQuestion(slot: slot) else { return nil }
 
         switch state.status {
         case .answered, .expired:
-            // Already resolved — caller re-shows result
             return nil
         case .active:
             break
         }
 
-        // Check validity window
+        // If the 1-hour window passed while the app was closed, treat it as expired.
         if Date() > state.deliveredAt.addingTimeInterval(3600) {
-            // Expired while app was closed — return .expired so the caller handles
-            // state mutation and result notification consistently via applyOutcome().
             return .expired
         }
 
         return answer == state.correctAnswer ? .correct : .incorrect
     }
 
-    /// Returns the current QuestionState for a slot (used for re-showing results).
+    /// Returns the current QuestionState for a slot (used to re-show a resolved result).
     func currentState(slot: Slot) -> QuestionState? {
         store.loadActiveQuestion(slot: slot)
     }
