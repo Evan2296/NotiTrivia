@@ -71,7 +71,7 @@ final class NotificationManager {
 
     /// Set to a non-nil integer to fire questions every N minutes during testing instead of at 12:00 / 18:00.
     /// Set to `nil` for production.
-    private let testModeIntervalMinutes: Int? = 45
+    private let testModeIntervalMinutes: Int? = nil
 
     /// How long after delivery a question stays answerable before the expiration notification fires.
     /// Production = 1 hour. In test mode, shrinks to fit inside the interval.
