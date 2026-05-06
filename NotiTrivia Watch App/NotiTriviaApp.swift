@@ -22,17 +22,23 @@ final class AppDelegate: NSObject, WKApplicationDelegate {
         _ userInfo: [AnyHashable: Any],
         fetchCompletionHandler completionHandler: @escaping (WKBackgroundFetchResult) -> Void
     ) {
-        if let choices = userInfo["choices"] as? [String] {
-            // Prefer an explicit categoryID key; fall back to the aps.category field.
-            let apsDict = userInfo["aps"] as? [AnyHashable: Any]
-            let categoryID = (userInfo["categoryID"] as? String)
-                ?? (apsDict?["category"] as? String)
-                ?? ""
-            if !categoryID.isEmpty {
-                NotificationManager.shared.registerQuestionCategory(categoryID: categoryID, choices: choices)
-            }
+        // This fires when a push arrives even if app is in background.
+        // Register the category immediately so buttons appear when notification displays.
+        guard let choices = userInfo["choices"] as? [String],
+              let questionID = userInfo["questionID"] as? String else {
+            completionHandler(.noData)
+            return
         }
-        completionHandler(.newData)
+
+        let categoryID = "push-question-\(questionID)"
+        let category = makeQuestionCategory(identifier: categoryID, choices: choices)
+
+        UNUserNotificationCenter.current().getNotificationCategories { existing in
+            var merged = existing.filter { $0.identifier != categoryID }
+            merged.insert(category)
+            UNUserNotificationCenter.current().setNotificationCategories(merged)
+            completionHandler(.newData)
+        }
     }
 }
 

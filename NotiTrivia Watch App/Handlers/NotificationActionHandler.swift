@@ -28,12 +28,16 @@ final class NotificationActionHandler: NSObject, UNUserNotificationCenterDelegat
             // Real question delivered in foreground — activate its state.
             engine.activateQuestion(from: userInfo)
             // Dynamically register the answer-choice category so action buttons appear.
-            // categoryID comes from userInfo (set by server) or falls back to the
-            // notification's own categoryIdentifier (value of aps.category in the payload).
-            let categoryID = (userInfo["categoryID"] as? String)
-                ?? notification.request.content.categoryIdentifier
-            if let choices = userInfo["choices"] as? [String], !categoryID.isEmpty {
-                notificationManager.registerQuestionCategory(categoryID: categoryID, choices: choices)
+            // Build the categoryID from questionID to match the server's aps.category value.
+            if let choices = userInfo["choices"] as? [String],
+               let questionID = userInfo["questionID"] as? String {
+                let categoryID = "push-question-\(questionID)"
+                let category = makeQuestionCategory(identifier: categoryID, choices: choices)
+                UNUserNotificationCenter.current().getNotificationCategories { existing in
+                    var merged = existing.filter { $0.identifier != categoryID }
+                    merged.insert(category)
+                    UNUserNotificationCenter.current().setNotificationCategories(merged)
+                }
             }
         }
 
@@ -66,10 +70,16 @@ final class NotificationActionHandler: NSObject, UNUserNotificationCenterDelegat
         engine.activateQuestion(from: userInfo)
         // Dynamically register the answer-choice category so it is available for any
         // subsequent tap on the same notification (idempotent).
-        let categoryID = (userInfo["categoryID"] as? String)
-            ?? response.notification.request.content.categoryIdentifier
-        if let choices = userInfo["choices"] as? [String], !categoryID.isEmpty {
-            notificationManager.registerQuestionCategory(categoryID: categoryID, choices: choices)
+        // Build the categoryID from questionID to match the server's aps.category value.
+        if let choices = userInfo["choices"] as? [String],
+           let questionID = userInfo["questionID"] as? String {
+            let categoryID = "push-question-\(questionID)"
+            let category = makeQuestionCategory(identifier: categoryID, choices: choices)
+            UNUserNotificationCenter.current().getNotificationCategories { existing in
+                var merged = existing.filter { $0.identifier != categoryID }
+                merged.insert(category)
+                UNUserNotificationCenter.current().setNotificationCategories(merged)
+            }
         }
 
         guard
