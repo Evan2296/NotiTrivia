@@ -1,6 +1,5 @@
 import SwiftUI
 import UserNotifications
-import WatchKit
 
 // MARK: - Hex Color Helper
 extension Color {
@@ -17,9 +16,10 @@ extension Color {
 
 struct ContentView: View {
 
+    @Environment(\.scenePhase) private var scenePhase
+
     @State private var streak: Int = 0
     @State private var bestStreak: Int = 0
-    @State private var scheduledCount: Int = 0
     @State private var testButtonState: TestButtonState = .idle
 
     private enum TestButtonState {
@@ -133,8 +133,8 @@ struct ContentView: View {
         .ignoresSafeArea()
         .onAppear { refresh() }
         // Refresh when app comes back to foreground
-        .onReceive(NotificationCenter.default.publisher(for: WKExtension.applicationDidBecomeActiveNotification)) { _ in
-            refresh()
+        .onChange(of: scenePhase) { _, newPhase in
+            if newPhase == .active { refresh() }
         }
         // Refresh streak immediately after an answer is processed
         .onReceive(NotificationCenter.default.publisher(for: .streakDidChange)) { _ in
@@ -150,16 +150,6 @@ struct ContentView: View {
     private func refresh() {
         streak = StreakManager.shared.currentStreak()
         bestStreak = StreakManager.shared.bestStreak()
-        loadScheduledCount()
-    }
-
-    private func loadScheduledCount() {
-        UNUserNotificationCenter.current().getPendingNotificationRequests { requests in
-            let count = requests.filter { $0.identifier.hasPrefix("question-") }.count
-            DispatchQueue.main.async {
-                scheduledCount = count
-            }
-        }
     }
 
     private func sendTest() {

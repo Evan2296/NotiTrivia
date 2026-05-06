@@ -23,29 +23,8 @@ final class QuestionEngine {
 
     // MARK: - Selection
 
-    /// Picks a question from the lowest-used pool at random and increments its usage count.
-    /// Use this when scheduling real questions so repeated picks are avoided.
-    @discardableResult
-    func selectAndReserve() -> Question? {
-        guard !questions.isEmpty else { return nil }
-
-        var usageMap = store.loadUsageMap()
-
-        let minCount = questions
-            .map { usageMap[$0.id] ?? $0.times_used }
-            .min() ?? 0
-
-        let pool = questions.filter { (usageMap[$0.id] ?? $0.times_used) == minCount }
-        guard let question = pool.randomElement() else { return nil }
-
-        usageMap[question.id] = (usageMap[question.id] ?? question.times_used) + 1
-        store.saveUsageMap(usageMap)
-
-        return question
-    }
-
-    /// Picks a question from the lowest-used pool WITHOUT incrementing the usage count.
-    /// Used for practice so the real question rotation is unaffected.
+    /// Picks a question from the lowest-used pool at random, without incrementing the usage count.
+    /// Used for practice so the real question rotation (managed server-side) is unaffected.
     func selectWithoutReserving() -> Question? {
         guard !questions.isEmpty else { return nil }
 

@@ -1,0 +1,29 @@
+# Supabase / Secrets
+Supabase Keys.rtf
+*.env
+Secrets.*
+Config.plist
+
+# macOS
+.DS_Store
+**/.DS_Store
+
+# Xcode user-specific data
+xcuserdata/
+**/*.xcuserstate
+**/*.xcuserdatad/
+
+# Xcode build artifacts
+build/
+DerivedData/
+*.ipa
+*.dSYM.zip
+*.dSYM
+
+# Swift Package Manager
+.build/
+.swiftpm/
+
+# CocoaPods (if ever added)
+Pods/
+Podfile.lock

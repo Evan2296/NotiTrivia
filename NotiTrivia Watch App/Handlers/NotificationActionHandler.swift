@@ -25,9 +25,16 @@ final class NotificationActionHandler: NSObject, UNUserNotificationCenterDelegat
         if userInfo["isExpiration"] as? Bool == true {
             handleExpirationDelivery(userInfo: userInfo)
         } else if userInfo["isPractice"] as? Bool != true {
-            // Real question delivered in foreground — activate its state and top up the schedule.
+            // Real question delivered in foreground — activate its state.
             engine.activateQuestion(from: userInfo)
-            notificationManager.refillSchedule()
+            // Dynamically register the answer-choice category so action buttons appear.
+            // categoryID comes from userInfo (set by server) or falls back to the
+            // notification's own categoryIdentifier (value of aps.category in the payload).
+            let categoryID = (userInfo["categoryID"] as? String)
+                ?? notification.request.content.categoryIdentifier
+            if let choices = userInfo["choices"] as? [String], !categoryID.isEmpty {
+                notificationManager.registerQuestionCategory(categoryID: categoryID, choices: choices)
+            }
         }
 
         completionHandler([.banner, .sound])
@@ -55,17 +62,21 @@ final class NotificationActionHandler: NSObject, UNUserNotificationCenterDelegat
             return
         }
 
-        // Real question tapped — activate state (handles background delivery) and refill the schedule.
+        // Real question tapped — activate state (handles background delivery).
         engine.activateQuestion(from: userInfo)
-        notificationManager.refillSchedule()
+        // Dynamically register the answer-choice category so it is available for any
+        // subsequent tap on the same notification (idempotent).
+        let categoryID = (userInfo["categoryID"] as? String)
+            ?? response.notification.request.content.categoryIdentifier
+        if let choices = userInfo["choices"] as? [String], !categoryID.isEmpty {
+            notificationManager.registerQuestionCategory(categoryID: categoryID, choices: choices)
+        }
 
         guard
             let slotRaw = userInfo["slot"] as? String,
-            let slot = Slot(rawValue: slotRaw),
-            let deliveredAtInterval = userInfo["deliveredAt"] as? TimeInterval
+            let slot = Slot(rawValue: slotRaw)
         else { return }
 
-        let deliveredAt = Date(timeIntervalSince1970: deliveredAtInterval)
         let actionID = response.actionIdentifier
 
         guard actionID != UNNotificationDefaultActionIdentifier,
@@ -76,7 +87,7 @@ final class NotificationActionHandler: NSObject, UNUserNotificationCenterDelegat
         let correctAnswer = userInfo["correctAnswer"] as? String ?? ""
 
         if let outcome = engine.evaluate(answer: answer, slot: slot) {
-            applyOutcome(outcome, slot: slot, deliveredAt: deliveredAt, correctAnswer: correctAnswer)
+            applyOutcome(outcome, slot: slot, correctAnswer: correctAnswer)
         } else {
             reshowResult(slot: slot)
         }
@@ -115,11 +126,10 @@ final class NotificationActionHandler: NSObject, UNUserNotificationCenterDelegat
 
     // MARK: - Outcome Application
 
-    /// Persists the outcome, updates the streak, cancels the expiration, and sends a result notification.
-    private func applyOutcome(_ outcome: Outcome, slot: Slot, deliveredAt: Date, correctAnswer: String) {
+    /// Persists the outcome, updates the streak, and sends a result notification.
+    private func applyOutcome(_ outcome: Outcome, slot: Slot, correctAnswer: String) {
         store.markAnswered(slot: slot, outcome: outcome)
         streakManager.handleOutcome(outcome)
-        notificationManager.cancelExpirationNotification(slot: slot, deliveredAt: deliveredAt)
 
         notificationManager.sendResultNotification(
             outcome: outcome,
