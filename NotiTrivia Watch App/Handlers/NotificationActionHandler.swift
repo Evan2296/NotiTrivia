@@ -27,14 +27,13 @@ final class NotificationActionHandler: NSObject, UNUserNotificationCenterDelegat
         } else if userInfo["isPractice"] as? Bool != true {
             // Real question delivered in foreground — activate its state.
             engine.activateQuestion(from: userInfo)
-            // Dynamically register the answer-choice category so action buttons appear.
-            // Build the categoryID from questionID to match the server's aps.category value.
-            if let choices = userInfo["choices"] as? [String],
-               let questionID = userInfo["questionID"] as? String {
-                let categoryID = "push-question-\(questionID)"
-                let category = makeQuestionCategory(identifier: categoryID, choices: choices)
+            // Re-register the stable category with the real choice titles as a belt-and-suspenders
+            // measure for the foreground case. The silent prep push should have already done this,
+            // but refreshing here ensures the titles are always current.
+            if let choices = userInfo["choices"] as? [String], !choices.isEmpty {
+                let category = makeQuestionCategory(identifier: pushQuestionCategoryID, choices: choices)
                 UNUserNotificationCenter.current().getNotificationCategories { existing in
-                    var merged = existing.filter { $0.identifier != categoryID }
+                    var merged = existing.filter { $0.identifier != pushQuestionCategoryID }
                     merged.insert(category)
                     UNUserNotificationCenter.current().setNotificationCategories(merged)
                 }
@@ -68,15 +67,13 @@ final class NotificationActionHandler: NSObject, UNUserNotificationCenterDelegat
 
         // Real question tapped — activate state (handles background delivery).
         engine.activateQuestion(from: userInfo)
-        // Dynamically register the answer-choice category so it is available for any
-        // subsequent tap on the same notification (idempotent).
-        // Build the categoryID from questionID to match the server's aps.category value.
-        if let choices = userInfo["choices"] as? [String],
-           let questionID = userInfo["questionID"] as? String {
-            let categoryID = "push-question-\(questionID)"
-            let category = makeQuestionCategory(identifier: categoryID, choices: choices)
+        // Refresh the stable category with the real choice titles (idempotent).
+        // The silent prep push already did this before the notification appeared,
+        // but refreshing here keeps the category correct for any edge case.
+        if let choices = userInfo["choices"] as? [String], !choices.isEmpty {
+            let category = makeQuestionCategory(identifier: pushQuestionCategoryID, choices: choices)
             UNUserNotificationCenter.current().getNotificationCategories { existing in
-                var merged = existing.filter { $0.identifier != categoryID }
+                var merged = existing.filter { $0.identifier != pushQuestionCategoryID }
                 merged.insert(category)
                 UNUserNotificationCenter.current().setNotificationCategories(merged)
             }

@@ -16,10 +16,22 @@ enum NotifID {
 // MARK: - Question Category
 //
 // watchOS displays action button titles from a registered UNNotificationCategory — NOT from
-// the notification content itself. Answer choices must be registered before the notification
-// is presented. For push-delivered real questions we register dynamically on arrival
-// (foreground: willPresent; background: AppDelegate.didReceiveRemoteNotification).
-// For practice questions we register at schedule time.
+// the notification content itself. Answer choices must be registered **before** the notification
+// is presented — watchOS renders the notification immediately and does not wait for async work.
+//
+// Strategy for push-delivered (real) questions:
+//   • A fixed category identifier "question_category" is registered at app launch with
+//     placeholder action titles so the category always exists in the system.
+//   • When a silent prep push arrives (content-available:1, no alert), the app re-registers
+//     "question_category" with the real answer choices **before** the visible notification fires.
+//   • The Supabase edge function sends aps.category = "question_category" on both pushes,
+//     so the already-registered category matches and action buttons appear correctly.
+//
+// For practice questions we register a unique per-question category at schedule time (unchanged).
+
+/// The single stable category identifier used for all server-sent (real) question pushes.
+/// Must match the `aps.category` value set by the Supabase edge function.
+let pushQuestionCategoryID = "question_category"
 
 func answerActionID(_ index: Int) -> String { "answer_\(index)" }
 
