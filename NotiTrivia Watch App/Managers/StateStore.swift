@@ -33,8 +33,11 @@ final class StateStore {
     }
 
     func markAnswered(slot: Slot, outcome: Outcome) {
-        queue.async(flags: .barrier) { [weak self] in
-            guard let self else { return }
+        // sync write: guarantees the state is committed before this function returns,
+        // so any subsequent loadActiveQuestion call (e.g. in handleExpirationDelivery)
+        // will always see the up-to-date .answered status and not let a server-sent
+        // expiration push slip through the race window.
+        queue.sync(flags: .barrier) {
             guard let data = defaults.data(forKey: questionKey(for: slot)),
                   var state = try? decoder.decode(QuestionState.self, from: data) else { return }
             state.status = .answered(outcome)
@@ -44,8 +47,7 @@ final class StateStore {
     }
 
     func markExpired(slot: Slot) {
-        queue.async(flags: .barrier) { [weak self] in
-            guard let self else { return }
+        queue.sync(flags: .barrier) {
             guard let data = defaults.data(forKey: questionKey(for: slot)),
                   var state = try? decoder.decode(QuestionState.self, from: data) else { return }
             state.status = .expired
