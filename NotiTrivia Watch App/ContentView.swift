@@ -20,6 +20,7 @@ struct ContentView: View {
 
     @State private var streak: Int = 0
     @State private var bestStreak: Int = 0
+    @State private var lives: Int = 3
     @State private var testButtonState: TestButtonState = .idle
     @State private var showHelp: Bool = false
 
@@ -117,6 +118,19 @@ struct ContentView: View {
                 .clipShape(Circle())
                 .position(x: 20, y: 20)
 
+                // MARK: - Lives indicator pinned to bottom-right
+                // 3 solid circles: green = alive, red = lost
+                // .position() center: x = width - pad(18) = width - 18 (accounts for HStack half-width ~18)
+                //                     y = height - bottom pad(8) - half height(8) = height - 16 (mirrors bell)
+                HStack(spacing: 4) {
+                    ForEach(0..<3, id: \.self) { i in
+                        Circle()
+                            .fill(i < lives ? Color.green : Color.red)
+                            .frame(width: 8, height: 8)
+                    }
+                }
+                .position(x: geo.size.width - 26, y: geo.size.height - 26)
+
                 // MARK: - Bell button pinned to bottom-left
                 // .position() center: x = leading pad(8) + half button(18) = 26
                 //                     y = height - bottom pad(8) - half button(18)
@@ -164,6 +178,7 @@ struct ContentView: View {
             DispatchQueue.main.async {
                 streak = StreakManager.shared.currentStreak()
                 bestStreak = StreakManager.shared.bestStreak()
+                lives = StreakManager.shared.currentLives()
             }
         }
     }
@@ -173,6 +188,7 @@ struct ContentView: View {
     private func refresh() {
         streak = StreakManager.shared.currentStreak()
         bestStreak = StreakManager.shared.bestStreak()
+        lives = StreakManager.shared.currentLives()
     }
 
     private func sendTest() {

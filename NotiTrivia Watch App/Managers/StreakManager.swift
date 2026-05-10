@@ -7,7 +7,7 @@ final class StreakManager {
 
     private init() {}
 
-    /// Applies streak logic for the given outcome and persists the result.
+    /// Applies streak and lives logic for the given outcome and persists the result.
     func handleOutcome(_ outcome: Outcome) {
         var streak = store.loadStreak()
 
@@ -17,8 +17,16 @@ final class StreakManager {
             if streak.currentStreak > streak.bestStreak {
                 streak.bestStreak = streak.currentStreak
             }
+            // Restore one life on a correct answer, capped at 3.
+            streak.lives = min(streak.lives + 1, 3)
+
         case .incorrect, .expired:
-            streak.currentStreak = 0
+            streak.lives -= 1
+            if streak.lives <= 0 {
+                // No lives left — reset streak and give a fresh start.
+                streak.currentStreak = 0
+                streak.lives = 3
+            }
         }
 
         store.saveStreak(streak)
@@ -32,5 +40,10 @@ final class StreakManager {
     /// Returns the best streak count ever recorded.
     func bestStreak() -> Int {
         store.loadStreak().bestStreak
+    }
+
+    /// Returns the current number of lives remaining.
+    func currentLives() -> Int {
+        store.loadStreak().lives
     }
 }
