@@ -21,6 +21,7 @@ struct ContentView: View {
     @State private var streak: Int = 0
     @State private var bestStreak: Int = 0
     @State private var testButtonState: TestButtonState = .idle
+    @State private var showHelp: Bool = false
 
     private enum TestButtonState {
         case idle, sending, sent, failed
@@ -95,6 +96,27 @@ struct ContentView: View {
                 .scaleEffect(1.15)
                 .position(x: geo.size.width / 2, y: geo.size.height / 2)
 
+                // MARK: - Help button pinned to top-left
+                // .position() center: x = leading pad(8) + half button(12) = 20
+                //                     y = top pad(8) + half button(12) = 20
+                Button {
+                    showHelp = true
+                } label: {
+                    ZStack {
+                        // Gradient ring matching main ring style
+                        Circle()
+                            .stroke(ringGradient, lineWidth: 1.5)
+                            .frame(width: 24, height: 24)
+                        Image(systemName: "questionmark")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundStyle(numberGradient)
+                    }
+                    .frame(width: 24, height: 24)
+                }
+                .buttonStyle(.borderless)
+                .clipShape(Circle())
+                .position(x: 20, y: 20)
+
                 // MARK: - Bell button pinned to bottom-left
                 // .position() center: x = leading pad(8) + half button(18) = 26
                 //                     y = height - bottom pad(8) - half button(18)
@@ -130,6 +152,7 @@ struct ContentView: View {
                 .position(x: 26, y: geo.size.height - 26)
             }
         }
+        .sheet(isPresented: $showHelp) { HelpView() }
         .ignoresSafeArea()
         .onAppear { refresh() }
         // Refresh when app comes back to foreground
