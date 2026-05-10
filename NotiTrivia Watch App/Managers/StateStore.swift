@@ -37,9 +37,13 @@ final class StateStore {
         // so any subsequent loadActiveQuestion call (e.g. in handleExpirationDelivery)
         // will always see the up-to-date .answered status and not let a server-sent
         // expiration push slip through the race window.
+        //
+        // The .active guard makes the read-check-write atomic within the barrier,
+        // preventing an expiration that already committed from being overwritten.
         queue.sync(flags: .barrier) {
             guard let data = defaults.data(forKey: questionKey(for: slot)),
                   var state = try? decoder.decode(QuestionState.self, from: data) else { return }
+            guard case .active = state.status else { return }
             state.status = .answered(outcome)
             guard let updated = try? encoder.encode(state) else { return }
             defaults.set(updated, forKey: questionKey(for: slot))
@@ -47,9 +51,14 @@ final class StateStore {
     }
 
     func markExpired(slot: Slot) {
+        // The .active guard makes the read-check-write atomic within the barrier,
+        // closing the TOCTOU window: if markAnswered already committed its write
+        // between handleExpirationDelivery's loadActiveQuestion and this call,
+        // we bail out instead of clobbering the answered state.
         queue.sync(flags: .barrier) {
             guard let data = defaults.data(forKey: questionKey(for: slot)),
                   var state = try? decoder.decode(QuestionState.self, from: data) else { return }
+            guard case .active = state.status else { return }
             state.status = .expired
             guard let updated = try? encoder.encode(state) else { return }
             defaults.set(updated, forKey: questionKey(for: slot))
@@ -60,8 +69,12 @@ final class StateStore {
 
     func saveStreak(_ streak: StreakState) {
         guard let data = try? encoder.encode(streak) else { return }
-        queue.async(flags: .barrier) { [weak self] in
-            self?.defaults.set(data, forKey: "streakState")
+        // sync write for durability parity with markAnswered/markExpired:
+        // guarantees the streak is persisted before the caller returns,
+        // so a watchOS process suspension immediately after handleOutcome
+        // cannot silently drop the update.
+        queue.sync(flags: .barrier) {
+            defaults.set(data, forKey: "streakState")
         }
     }
 
