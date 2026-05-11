@@ -22,6 +22,11 @@ final class NotificationActionHandler: NSObject, UNUserNotificationCenterDelegat
     ) {
         let userInfo = notification.request.content.userInfo
 
+        // NOTE: This isExpiration path is reached only for practice question expirations —
+        // locally scheduled notifications that carry isExpiration: true and isPractice: true.
+        // Real question expirations now arrive as silent background pushes and are handled
+        // entirely in AppDelegate.didReceiveRemoteNotification before any notification is
+        // displayed to the user.
         if userInfo["isExpiration"] as? Bool == true {
             handleExpirationDelivery(userInfo: userInfo)
         } else if userInfo["isPractice"] as? Bool != true {
@@ -55,6 +60,11 @@ final class NotificationActionHandler: NSObject, UNUserNotificationCenterDelegat
 
         let userInfo = response.notification.request.content.userInfo
 
+        // NOTE: This isExpiration path is reached only for practice question expirations —
+        // locally scheduled notifications that carry isExpiration: true and isPractice: true.
+        // Real question expirations now arrive as silent background pushes and are handled
+        // entirely in AppDelegate.didReceiveRemoteNotification before any notification is
+        // displayed to the user.
         if userInfo["isExpiration"] as? Bool == true {
             handleExpirationDelivery(userInfo: userInfo)
             return

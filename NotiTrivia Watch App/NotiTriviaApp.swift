@@ -16,16 +16,60 @@ final class AppDelegate: NSObject, WKApplicationDelegate {
 
     /// Called when a remote push arrives while the app is in the background.
     ///
-    /// For real question pushes the server sends a **silent prep push** first
-    /// (content-available:1, no alert) containing the question choices.  We use that window
-    /// to re-register the stable "question_category" with the real answer-choice titles
-    /// **before** the visible notification arrives, so watchOS can render the action buttons.
+    /// Two distinct silent push types are handled here, checked in order:
+    ///
+    /// 1. **Expiration push** — sent by the Supabase `send-expirations` Edge Function after the
+    ///    1-hour answer window closes. Payload contains `isExpiration: true`, a `slot`, and the
+    ///    `correctAnswer`. This is the *primary* expiration mechanism; the time-based fallback in
+    ///    QuestionEngine.evaluate() only fires if this push never arrives (e.g. device was offline).
+    ///
+    /// 2. **Silent prep push** — sent by `send-questions` just before the visible question
+    ///    notification. Payload contains a `choices` array. We use this window to pre-register the
+    ///    stable "question_category" with real answer-choice titles so watchOS can render the action
+    ///    buttons when the visible notification appears.
     ///
     /// Requires `content-available: 1` in the APNs payload from the server.
     func didReceiveRemoteNotification(
         _ userInfo: [AnyHashable: Any],
         fetchCompletionHandler completionHandler: @escaping (WKBackgroundFetchResult) -> Void
     ) {
+        // CASE 1 — Expiration push from Supabase send-expirations Edge Function.
+        // Arrives as a silent background push (content-available: 1, no alert) with
+        // isExpiration: true after the 1-hour answer window closes. Marks the active question
+        // as expired, deducts a life, and sends a local result notification to the user.
+        if userInfo["isExpiration"] as? Bool == true {
+            guard
+                let slotRaw = userInfo["slot"] as? String,
+                let slot = Slot(rawValue: slotRaw),
+                let correctAnswer = userInfo["correctAnswer"] as? String
+            else {
+                completionHandler(.noData)
+                return
+            }
+
+            guard let activeQuestion = StateStore.shared.loadActiveQuestion(slot: slot),
+                  case .active = activeQuestion.status else {
+                // Question was already answered or expired — this push is a no-op.
+                completionHandler(.noData)
+                return
+            }
+
+            StateStore.shared.markExpired(slot: slot)
+            StreakManager.shared.handleOutcome(.expired)
+            NotificationCenter.default.post(name: .streakDidChange, object: nil)
+            NotificationManager.shared.sendResultNotification(
+                outcome: .expired,
+                streak: StreakManager.shared.currentStreak(),
+                correctAnswer: correctAnswer
+            )
+            completionHandler(.newData)
+            return
+        }
+
+        // CASE 2 — Silent prep push from Supabase send-questions Edge Function.
+        // Arrives just before the visible question notification. Contains the answer choices
+        // so we can pre-register the stable "question_category" with real action button titles
+        // before the visible push appears, avoiding any timing race with watchOS rendering.
         guard let choices = userInfo["choices"] as? [String], !choices.isEmpty else {
             completionHandler(.noData)
             return
