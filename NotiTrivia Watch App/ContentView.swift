@@ -137,30 +137,37 @@ struct ContentView: View {
                 Button {
                     sendTest()
                 } label: {
-                    Group {
-                        switch testButtonState {
-                        case .idle:
-                            Image(systemName: "bell")
-                                .font(.system(size: 16, weight: .semibold))
-                        case .sending:
-                            ProgressView()
-                                .progressViewStyle(.circular)
-                                .scaleEffect(0.70)
-                        case .sent:
-                            Image(systemName: "checkmark")
-                                .font(.system(size: 16, weight: .semibold))
-                        case .failed:
-                            Image(systemName: "xmark")
-                                .font(.system(size: 16, weight: .semibold))
+                    ZStack {
+                        // Gradient ring outline matching main ring style
+                        Circle()
+                            .stroke(ringGradient, lineWidth: 1.5)
+                            .frame(width: 36, height: 36)
+
+                        Group {
+                            switch testButtonState {
+                            case .idle:
+                                Image(systemName: "bell")
+                                    .font(.system(size: 16, weight: .semibold))
+                                    .foregroundStyle(numberGradient)
+                            case .sending:
+                                ProgressView()
+                                    .progressViewStyle(.circular)
+                                    .scaleEffect(0.70)
+                                    .tint(Color(red: 1.00, green: 0.58, blue: 0.10))
+                            case .sent:
+                                Image(systemName: "checkmark")
+                                    .font(.system(size: 16, weight: .semibold))
+                                    .foregroundColor(.green)
+                            case .failed:
+                                Image(systemName: "xmark")
+                                    .font(.system(size: 16, weight: .semibold))
+                                    .foregroundColor(.red)
+                            }
                         }
                     }
                     .frame(width: 36, height: 36)
                 }
-                .buttonStyle(.bordered)
-                .tint(
-                    testButtonState == .sent    ? .green  :
-                    testButtonState == .failed  ? .red    : .blue
-                )
+                .buttonStyle(.borderless)
                 .clipShape(Circle())
                 .disabled(testButtonState == .sending)
                 .position(x: 26, y: geo.size.height - 26)
