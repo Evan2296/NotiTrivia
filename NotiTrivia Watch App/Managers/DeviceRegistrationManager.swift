@@ -22,7 +22,7 @@ final class DeviceRegistrationManager {
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue("sb_publishable_dotcDuRHFZatHnyizkQCAA_y-WJrH7YSecret", forHTTPHeaderField: "apikey")
+        request.setValue("eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imh6bHJxeGN4Y2dkdm9jZmFpdW9mIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc3Nzk2NTI3MSwiZXhwIjoyMDkzNTQxMjcxfQ.Ttujbro4n9dsZr_gBJva6PAv2C-XFVbpe3Bf132LDpo", forHTTPHeaderField: "apikey")
 
         let body: [String: String] = [
             "device_token": hexToken,
