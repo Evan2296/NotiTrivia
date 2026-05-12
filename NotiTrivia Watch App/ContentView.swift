@@ -23,6 +23,7 @@ struct ContentView: View {
     @State private var lives: Int = 3
     @State private var testButtonState: TestButtonState = .idle
     @State private var showHelp: Bool = false
+    @State private var livesGlowPhase: Bool = false
 
     private enum TestButtonState {
         case idle, sending, sent, failed
@@ -92,6 +93,7 @@ struct ContentView: View {
                             .font(.system(size: 10, weight: .regular))
                             .foregroundStyle(.white.opacity(0.62))
                             .offset(y: -4)
+                            .opacity(bestStreak == 0 ? 0 : 1)
                     }
                 }
                 .scaleEffect(1.15)
@@ -121,17 +123,29 @@ struct ContentView: View {
                 // MARK: - Lives indicator pinned to bottom-right
                 // 3 solid circles: green = alive, red = lost
                 // .position() center: x = width - pad(18) = width - 18 (accounts for HStack half-width ~18)
-                //                     y = height - bottom pad(8) - half height(8) = height - 16 (mirrors bell)
+                //                     y = height - bottom pad(8) - half height(8) = height - 16 (mirrors practice button)
                 HStack(spacing: 4) {
                     ForEach(0..<3, id: \.self) { i in
-                        Circle()
-                            .fill(i < lives ? Color.green : Color.red)
-                            .frame(width: 8, height: 8)
+                        if i < lives {
+                            // Active life: gradient fill with slow animated hue shift
+                            Circle()
+                                .fill(numberGradient)
+                                .frame(width: 8, height: 8)
+                                .hueRotation(.degrees(livesGlowPhase ? 25 : -25))
+                        } else {
+                            // Lost life: near-black fill + dim gradient stroke
+                            Circle()
+                                .fill(Color(white: 0.10))
+                                .frame(width: 8, height: 8)
+                                .overlay(
+                                    Circle().stroke(numberGradient.opacity(0.28), lineWidth: 1)
+                                )
+                        }
                     }
                 }
                 .position(x: geo.size.width - 26, y: geo.size.height - 26)
 
-                // MARK: - Bell button pinned to bottom-left
+                // MARK: - Practice button pinned to bottom-left
                 // .position() center: x = leading pad(8) + half button(18) = 26
                 //                     y = height - bottom pad(8) - half button(18)
                 Button {
@@ -146,7 +160,7 @@ struct ContentView: View {
                         Group {
                             switch testButtonState {
                             case .idle:
-                                Image(systemName: "bell")
+                                Image(systemName: "bolt")
                                     .font(.system(size: 16, weight: .semibold))
                                     .foregroundStyle(numberGradient)
                             case .sending:
@@ -175,7 +189,14 @@ struct ContentView: View {
         }
         .sheet(isPresented: $showHelp) { HelpView() }
         .ignoresSafeArea()
-        .onAppear { refresh() }
+        .onAppear {
+            refresh()
+            if !livesGlowPhase {
+                withAnimation(.easeInOut(duration: 3).repeatForever(autoreverses: true)) {
+                    livesGlowPhase = true
+                }
+            }
+        }
         // Refresh when app comes back to foreground
         .onChange(of: scenePhase) { _, newPhase in
             if newPhase == .active { refresh() }

@@ -13,20 +13,27 @@ struct HelpView: View {
     )
 
     var body: some View {
-        ScrollView(.vertical, showsIndicators: true) {
-            VStack(alignment: .leading, spacing: 10) {
+        // ZStack lets Color.black fill the sheet while the VStack
+        // sizes to its natural content height — prevents Text truncation.
+        ZStack(alignment: .topLeading) {
+            Color.black.ignoresSafeArea()
+
+            VStack(alignment: .leading, spacing: 8) {
+
+                // MARK: - Title
                 Text("How to Play")
                     .font(.system(size: 14, weight: .semibold))
                     .foregroundStyle(numberGradient)
 
-                Text("Two questions arrive each day, at noon and 6 PM. Tap your answer in the notification within one hour or it counts as a miss. Wrong answers and misses cost a life. Lose all 3 and your streak resets, then your lives refill. Correct answers restore one life.")
-                    .font(.system(size: 13))
+                // MARK: - Body text
+                Text("Two questions daily, noon & 6 PM. Answer correctly in the notification within an hour to grow your streak and gain a life. Wrong or missed costs a life. Lose all 3 and your streak resets.")
+                    .font(.system(size: 11))
                     .foregroundStyle(.white)
+                    .fixedSize(horizontal: false, vertical: true)
             }
-            .padding()
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 6)
         }
-        .background(Color.black)
     }
 }
 
