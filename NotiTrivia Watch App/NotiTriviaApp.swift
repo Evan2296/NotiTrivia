@@ -16,32 +16,30 @@ final class AppDelegate: NSObject, WKApplicationDelegate {
 
     /// Called when a remote push arrives while the app is in the background.
     ///
-    /// Two distinct silent push types are handled here, checked in order:
+    /// Two distinct push types are handled here, checked in order:
     ///
     /// 1. **Expiration push** — sent by the Supabase `send-expirations` Edge Function after the
-    ///    1-hour answer window closes. Payload contains `isExpiration: true`, a `slot`, and the
-    ///    `correctAnswer`. This is the *primary* expiration mechanism; the time-based fallback in
-    ///    QuestionEngine.evaluate() only fires if this push never arrives (e.g. device was offline).
+    ///    1-hour answer window closes. Arrives as a visible alert push (apns-priority 10) so it
+    ///    delivers reliably even when the watch is inactive or charging. The push itself is the
+    ///    expiration notification — no local result notification is fired here. This handler only
+    ///    marks the question expired and updates streak/lives on-device.
     ///
     /// 2. **Silent prep push** — sent by `send-questions` just before the visible question
     ///    notification. Payload contains a `choices` array. We use this window to pre-register the
     ///    stable "question_category" with real answer-choice titles so watchOS can render the action
     ///    buttons when the visible notification appears.
-    ///
-    /// Requires `content-available: 1` in the APNs payload from the server.
     func didReceiveRemoteNotification(
         _ userInfo: [AnyHashable: Any],
         fetchCompletionHandler completionHandler: @escaping (WKBackgroundFetchResult) -> Void
     ) {
         // CASE 1 — Expiration push from Supabase send-expirations Edge Function.
-        // Arrives as a silent background push (content-available: 1, no alert) with
-        // isExpiration: true after the 1-hour answer window closes. Marks the active question
-        // as expired, deducts a life, and sends a local result notification to the user.
+        // Arrives as a visible alert push (content-available: 1) with isExpiration: true
+        // after the 1-hour answer window closes. The push itself displays the expiration
+        // message and correct answer — no additional local notification is sent from here.
         if userInfo["isExpiration"] as? Bool == true {
             guard
                 let slotRaw = userInfo["slot"] as? String,
-                let slot = Slot(rawValue: slotRaw),
-                let correctAnswer = userInfo["correctAnswer"] as? String
+                let slot = Slot(rawValue: slotRaw)
             else {
                 completionHandler(.noData)
                 return
@@ -57,11 +55,6 @@ final class AppDelegate: NSObject, WKApplicationDelegate {
             StateStore.shared.markExpired(slot: slot)
             StreakManager.shared.handleOutcome(.expired)
             NotificationCenter.default.post(name: .streakDidChange, object: nil)
-            NotificationManager.shared.sendResultNotification(
-                outcome: .expired,
-                streak: StreakManager.shared.currentStreak(),
-                correctAnswer: correctAnswer
-            )
             completionHandler(.newData)
             return
         }

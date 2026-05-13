@@ -22,11 +22,11 @@ final class NotificationActionHandler: NSObject, UNUserNotificationCenterDelegat
     ) {
         let userInfo = notification.request.content.userInfo
 
-        // NOTE: This isExpiration path is reached only for practice question expirations —
-        // locally scheduled notifications that carry isExpiration: true and isPractice: true.
-        // Real question expirations now arrive as silent background pushes and are handled
-        // entirely in AppDelegate.didReceiveRemoteNotification before any notification is
-        // displayed to the user.
+        // Real expiration pushes now arrive as visible alert pushes (apns-priority 10) and
+        // will reach this handler when the app is in the foreground. handleExpirationDelivery
+        // is idempotent — the .active guard ensures streak/lives are only debited once even
+        // if AppDelegate.didReceiveRemoteNotification already processed the same push.
+        // Practice expirations are locally scheduled and also flow through here.
         if userInfo["isExpiration"] as? Bool == true {
             handleExpirationDelivery(userInfo: userInfo)
         } else if userInfo["isPractice"] as? Bool != true {
@@ -60,11 +60,10 @@ final class NotificationActionHandler: NSObject, UNUserNotificationCenterDelegat
 
         let userInfo = response.notification.request.content.userInfo
 
-        // NOTE: This isExpiration path is reached only for practice question expirations —
-        // locally scheduled notifications that carry isExpiration: true and isPractice: true.
-        // Real question expirations now arrive as silent background pushes and are handled
-        // entirely in AppDelegate.didReceiveRemoteNotification before any notification is
-        // displayed to the user.
+        // Real expiration pushes now arrive as visible alert pushes and the user may tap them.
+        // handleExpirationDelivery is idempotent — if AppDelegate already marked the question
+        // expired when the push arrived, the .active guard bails out harmlessly here.
+        // Practice expirations are locally scheduled and also flow through here.
         if userInfo["isExpiration"] as? Bool == true {
             handleExpirationDelivery(userInfo: userInfo)
             return
@@ -176,8 +175,10 @@ final class NotificationActionHandler: NSObject, UNUserNotificationCenterDelegat
 
     // MARK: - Expiration Delivery
 
-    /// Marks a question as expired when the expiration notification fires or is tapped.
-    /// Idempotent — safe to call multiple times. Practice expirations are ignored.
+    /// Marks a question as expired when an expiration notification is delivered or tapped.
+    /// Handles both server-sent alert pushes (real questions) and locally scheduled
+    /// expiration notifications (practice questions). Idempotent — the .active guard
+    /// ensures streak/lives are only debited once regardless of how many times this is called.
     private func handleExpirationDelivery(userInfo: [AnyHashable: Any]) {
         guard
             let slotRaw = userInfo["slot"] as? String,
