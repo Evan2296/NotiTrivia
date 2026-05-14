@@ -202,6 +202,7 @@ final class NotificationActionHandler: NSObject, UNUserNotificationCenterDelegat
 
         store.markExpired(slot: slot)
         streakManager.handleOutcome(.expired)
+        NotificationCenter.default.post(name: .streakDidChange, object: nil)
     }
 
     // MARK: - Helpers

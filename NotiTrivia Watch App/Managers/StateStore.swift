@@ -20,8 +20,12 @@ final class StateStore {
 
     func saveActiveQuestion(_ state: QuestionState, slot: Slot) {
         guard let data = try? encoder.encode(state) else { return }
-        queue.async(flags: .barrier) { [weak self] in
-            self?.defaults.set(data, forKey: self?.questionKey(for: slot) ?? "")
+        // sync write for durability: guarantees question state is persisted before this
+        // function returns, so a watchOS process suspension immediately after activateQuestion
+        // cannot silently drop the state and leave the question unrecoverable.
+        let key = questionKey(for: slot)
+        queue.sync(flags: .barrier) {
+            defaults.set(data, forKey: key)
         }
     }
 
@@ -102,8 +106,8 @@ final class StateStore {
 
     func saveUsageMap(_ map: [String: Int]) {
         guard let data = try? encoder.encode(map) else { return }
-        queue.async(flags: .barrier) { [weak self] in
-            self?.defaults.set(data, forKey: "usageMap")
+        queue.sync(flags: .barrier) {
+            defaults.set(data, forKey: "usageMap")
         }
     }
 }
