@@ -165,7 +165,10 @@ final class NotificationManager {
     // MARK: - Result Notification
 
     /// Fires an immediate result notification after an answer is evaluated.
-    func sendResultNotification(outcome: Outcome, streak: Int, correctAnswer: String, isPractice: Bool = false) {
+    /// - Parameter streakWasReset: Pass `true` only when a streak reset actually occurred
+    ///   (i.e. lives reached 0 and refilled). Defaults to `false` so existing call sites
+    ///   that cannot determine this (re-show, practice) compile without changes.
+    func sendResultNotification(outcome: Outcome, streak: Int, correctAnswer: String, isPractice: Bool = false, streakWasReset: Bool = false) {
         let content = UNMutableNotificationContent()
         content.sound = .default
 
@@ -175,9 +178,13 @@ final class NotificationManager {
             content.body = isPractice ? "Nice work! (Practice — streak unchanged)" : "🔥 Streak: \(streak)"
         case .incorrect:
             content.title = "❌ Incorrect"
-            content.body = isPractice
-                ? "The correct answer was: \(correctAnswer)\n(Practice — streak unchanged)"
-                : "The correct answer was: \(correctAnswer)\nStreak reset."
+            if isPractice {
+                content.body = "The correct answer was: \(correctAnswer)\n(Practice — streak unchanged)"
+            } else if streakWasReset {
+                content.body = "The correct answer was: \(correctAnswer)\nStreak reset."
+            } else {
+                content.body = "The correct answer was: \(correctAnswer)\nLost a life."
+            }
         case .expired:
             content.title = "⏰ Time Expired"
             content.body = "The correct answer was: \(correctAnswer)"

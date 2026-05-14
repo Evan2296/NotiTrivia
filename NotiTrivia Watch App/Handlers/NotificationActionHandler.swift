@@ -145,12 +145,22 @@ final class NotificationActionHandler: NSObject, UNUserNotificationCenterDelegat
     /// Persists the outcome, updates the streak, and sends a result notification.
     private func applyOutcome(_ outcome: Outcome, slot: Slot, correctAnswer: String) {
         store.markAnswered(slot: slot, outcome: outcome)
+        AnswerReportingManager.shared.reportAnswer(slot: slot.rawValue)
+
+        // Capture lives before applying the outcome so we can detect whether a streak
+        // reset actually occurred. A reset happens only when lives drop to 0 and refill
+        // to 3 — detectable because livesAfter > livesBefore on an incorrect/expired outcome.
+        let livesBefore = streakManager.currentLives()
         streakManager.handleOutcome(outcome)
+        let livesAfter = streakManager.currentLives()
+
+        let streakWasReset = (outcome == .incorrect || outcome == .expired) && livesAfter > livesBefore
 
         notificationManager.sendResultNotification(
             outcome: outcome,
             streak: streakManager.currentStreak(),
-            correctAnswer: correctAnswer
+            correctAnswer: correctAnswer,
+            streakWasReset: streakWasReset
         )
 
         NotificationCenter.default.post(name: .streakDidChange, object: nil)
