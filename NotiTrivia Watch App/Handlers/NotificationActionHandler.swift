@@ -143,8 +143,20 @@ final class NotificationActionHandler: NSObject, UNUserNotificationCenterDelegat
     // MARK: - Outcome Application
 
     /// Persists the outcome, updates the streak, and sends a result notification.
+    ///
+    /// Gated on `store.markAnswered` returning `true` — if a racing expiration push
+    /// already transitioned the state to `.expired` between `evaluate()` returning an
+    /// outcome and this call, `markAnswered` no-ops and returns `false`. In that case
+    /// we re-show the expiration result (the user effectively missed the deadline by
+    /// a hair) instead of double-counting `handleOutcome` on top of the expiration
+    /// path's debit. This closes the boundary race that previously corrupted lives.
     private func applyOutcome(_ outcome: Outcome, slot: Slot, correctAnswer: String) {
-        store.markAnswered(slot: slot, outcome: outcome)
+        guard store.markAnswered(slot: slot, outcome: outcome) else {
+            // A racing expiration already resolved this slot — show what actually applied.
+            reshowResult(slot: slot)
+            return
+        }
+
         AnswerReportingManager.shared.reportAnswer(slot: slot.rawValue)
 
         // Capture lives before applying the outcome so we can detect whether a streak
@@ -187,8 +199,10 @@ final class NotificationActionHandler: NSObject, UNUserNotificationCenterDelegat
 
     /// Marks a question as expired when an expiration notification is delivered or tapped.
     /// Handles both server-sent alert pushes (real questions) and locally scheduled
-    /// expiration notifications (practice questions). Idempotent — the .active guard
-    /// ensures streak/lives are only debited once regardless of how many times this is called.
+    /// expiration notifications (practice questions). Idempotent — `markExpired` returns
+    /// `false` if the state was already resolved (e.g. by a racing answer-tap), and we
+    /// gate `handleOutcome` and the streak-reset follow-up on that result so the lives
+    /// counter is never double-debited.
     private func handleExpirationDelivery(userInfo: [AnyHashable: Any]) {
         guard
             let slotRaw = userInfo["slot"] as? String,
@@ -197,11 +211,72 @@ final class NotificationActionHandler: NSObject, UNUserNotificationCenterDelegat
 
         guard userInfo["isPractice"] as? Bool != true else { return }
 
-        guard let state = store.loadActiveQuestion(slot: slot),
-              case .active = state.status else { return }
+        guard store.markExpired(slot: slot) else {
+            // Already resolved (answered or expired) — nothing to do. No double debit.
+            return
+        }
 
-        store.markExpired(slot: slot)
+        applyExpirationStreakChange()
+    }
+
+    // MARK: - Reconciliation Sweep
+
+    /// Defense-in-depth for the watchOS expiration-push gap.
+    ///
+    /// On watchOS, `WKApplicationDelegate.didReceiveRemoteNotification` does NOT fire for
+    /// visible alert pushes — only for pure background (content-available:1, priority 5)
+    /// pushes. Our `send-expirations` Edge Function sends a visible alert push (so the
+    /// user actually sees "Time Expired — the correct answer was X"), which means the
+    /// AppDelegate background handler is unreachable for it. The push only debits lives
+    /// when (a) the watch is in foreground and `willPresent` runs, or (b) the user taps
+    /// the notification and `didReceive` runs. A user who ignores the expiration push
+    /// completely would otherwise never lose a life — bypassing the entire lives system.
+    ///
+    /// This sweep closes that gap: every time the app comes to foreground, it scans both
+    /// slots, and for any QuestionState still in `.active` whose 1-hour answer window
+    /// has elapsed, it marks expired and debits one life — guaranteeing the penalty
+    /// catches up next time the user opens the watch app.
+    ///
+    /// Combined with the silent-prep-push activation in `AppDelegate` (which writes the
+    /// QuestionState the moment the prep push arrives, before the visible question
+    /// notification is even shown), this guarantees a QuestionState exists for the sweep
+    /// to find — even if the user never taps anything.
+    func reconcileExpiredQuestions() {
+        let expirationWindow: TimeInterval = 3600
+        let now = Date()
+
+        for slot in [Slot.noon, Slot.evening] {
+            guard let state = store.loadActiveQuestion(slot: slot),
+                  case .active = state.status,
+                  now > state.deliveredAt.addingTimeInterval(expirationWindow)
+            else { continue }
+
+            guard store.markExpired(slot: slot) else { continue }
+            applyExpirationStreakChange()
+            print("[NotificationActionHandler] Reconciled expired slot=\(slot.rawValue) questionID=\(state.questionID)")
+        }
+    }
+
+    /// Shared helper that applies the streak/lives delta for an expiration and posts
+    /// the UI refresh notification. Used by both `handleExpirationDelivery` (real-time
+    /// push) and `reconcileExpiredQuestions` (foreground sweep) so the on-device side
+    /// effects are identical regardless of which path catches the expiration.
+    ///
+    /// Fires `sendStreakResetNotification` only when the debit caused a full streak
+    /// reset (lives 1 → 0 → refill to 3 with streak zeroed). Routine life losses don't
+    /// fire a follow-up notification — they're visible on the watch face's lives
+    /// indicator and a second notification would be noise. A reset, however, is a
+    /// significant event we want the user to know about without opening the app.
+    private func applyExpirationStreakChange() {
+        let livesBefore = streakManager.currentLives()
         streakManager.handleOutcome(.expired)
+        let livesAfter = streakManager.currentLives()
+
+        let streakWasReset = livesAfter > livesBefore
+        if streakWasReset {
+            notificationManager.sendStreakResetNotification()
+        }
+
         NotificationCenter.default.post(name: .streakDidChange, object: nil)
     }
 

@@ -200,4 +200,31 @@ final class NotificationManager {
             if let error { print("[NotificationManager] Result notification error: \(error)") }
         }
     }
+
+    // MARK: - Streak Reset Notification
+
+    /// Fires a follow-up local notification when a streak reset occurs from a
+    /// server-sent expiration. The expiration push itself only carries the
+    /// "correct answer was X" text — it can't include lives/streak state
+    /// because that's tracked entirely on-device. A streak reset is a
+    /// significant event (lives reached 0, streak zeroed, lives refilled to 3)
+    /// the user should know about without having to open the app. Routine
+    /// life losses don't fire this — they're already visible on the ring's
+    /// lives indicator next time the user opens the watch app.
+    func sendStreakResetNotification() {
+        let content = UNMutableNotificationContent()
+        content.title = "💔 Streak Reset"
+        content.body = "You're out of lives — your streak has been reset. Start fresh!"
+        content.sound = .default
+
+        let request = UNNotificationRequest(
+            identifier: "streak-reset-\(UUID().uuidString)",
+            content: content,
+            trigger: UNTimeIntervalNotificationTrigger(timeInterval: 1, repeats: false)
+        )
+
+        center.add(request) { error in
+            if let error { print("[NotificationManager] Streak reset notification error: \(error)") }
+        }
+    }
 }

@@ -33,9 +33,20 @@ final class AppDelegate: NSObject, WKApplicationDelegate {
         fetchCompletionHandler completionHandler: @escaping (WKBackgroundFetchResult) -> Void
     ) {
         // CASE 1 — Expiration push from Supabase send-expirations Edge Function.
-        // Arrives as a visible alert push (content-available: 1) with isExpiration: true
-        // after the 1-hour answer window closes. The push itself displays the expiration
-        // message and correct answer — no additional local notification is sent from here.
+        //
+        // ⚠️ Per Apple's docs, this handler does NOT fire for visible alert pushes on
+        // watchOS — only for pure background pushes (content-available:1, priority 5).
+        // Our expiration push is a visible alert (so the watch displays "Time Expired"
+        // even if the app is suspended), so this branch is effectively unreachable in
+        // production today. It's kept in place for two reasons:
+        //   1. Defense in depth — if Apple ever changes this behavior, the code is correct.
+        //   2. The actual lives debit for missed expirations now flows through
+        //      `NotificationActionHandler.reconcileExpiredQuestions`, invoked when the
+        //      watch app comes to foreground, plus the existing willPresent/didReceive
+        //      paths in the action handler. See that file for the full rationale.
+        //
+        // The branch is also gated on `markExpired` returning `true` so a racing
+        // answer-tap can never cause `handleOutcome(.expired)` to double-debit.
         if userInfo["isExpiration"] as? Bool == true {
             guard
                 let slotRaw = userInfo["slot"] as? String,
@@ -45,14 +56,12 @@ final class AppDelegate: NSObject, WKApplicationDelegate {
                 return
             }
 
-            guard let activeQuestion = StateStore.shared.loadActiveQuestion(slot: slot),
-                  case .active = activeQuestion.status else {
-                // Question was already answered or expired — this push is a no-op.
+            guard StateStore.shared.markExpired(slot: slot) else {
+                // Already resolved (answered or expired) — this push is a no-op.
                 completionHandler(.noData)
                 return
             }
 
-            StateStore.shared.markExpired(slot: slot)
             StreakManager.shared.handleOutcome(.expired)
             NotificationCenter.default.post(name: .streakDidChange, object: nil)
             completionHandler(.newData)
@@ -67,6 +76,25 @@ final class AppDelegate: NSObject, WKApplicationDelegate {
             completionHandler(.noData)
             return
         }
+
+        // CRITICAL: Eagerly write the QuestionState from the silent prep push.
+        //
+        // Previously, QuestionState was only created when the user tapped the visible
+        // notification or when willPresent fired (foreground only). If the user ignored
+        // the question entirely, no state was ever written — and then when the expiration
+        // push fired 1 hour later, every handler bailed out at the `loadActiveQuestion`
+        // guard because no state existed. The user lost no life. That broke the entire
+        // lives system: users could avoid all penalties simply by ignoring notifications.
+        //
+        // Now the state is written the moment the silent prep push arrives, guaranteeing:
+        //   • the visible push's tap-to-answer flow has state to evaluate against,
+        //   • the foreground-sweep `reconcileExpiredQuestions` has state to debit a life
+        //     against the next time the user opens the watch app,
+        //   • the AppDelegate expiration branch (if it ever fires) finds state to expire.
+        //
+        // `activateQuestion` is idempotent and self-validating, so missing fields in the
+        // payload are silently ignored without polluting state.
+        QuestionEngine.shared.activateQuestion(from: userInfo)
 
         // Always use the stable, pre-known category ID so it matches aps.category on the
         // visible push without any timing race.

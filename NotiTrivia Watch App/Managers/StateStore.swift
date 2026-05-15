@@ -36,7 +36,15 @@ final class StateStore {
         }
     }
 
-    func markAnswered(slot: Slot, outcome: Outcome) {
+    /// Transitions an .active question to .answered(outcome).
+    /// Returns `true` if the transition actually happened, `false` if the state
+    /// did not exist or was already resolved (answered/expired) — letting callers
+    /// gate side-effects (`handleOutcome`, `reportAnswer`, result notifications)
+    /// so they only run when this call is the one that committed the change.
+    /// This closes the boundary-race window where a simultaneous expiration push
+    /// could otherwise cause `StreakManager.handleOutcome` to run twice.
+    @discardableResult
+    func markAnswered(slot: Slot, outcome: Outcome) -> Bool {
         // sync write: guarantees the state is committed before this function returns,
         // so any subsequent loadActiveQuestion call (e.g. in handleExpirationDelivery)
         // will always see the up-to-date .answered status and not let a server-sent
@@ -44,6 +52,7 @@ final class StateStore {
         //
         // The .active guard makes the read-check-write atomic within the barrier,
         // preventing an expiration that already committed from being overwritten.
+        var didTransition = false
         queue.sync(flags: .barrier) {
             guard let data = defaults.data(forKey: questionKey(for: slot)),
                   var state = try? decoder.decode(QuestionState.self, from: data) else { return }
@@ -51,14 +60,20 @@ final class StateStore {
             state.status = .answered(outcome)
             guard let updated = try? encoder.encode(state) else { return }
             defaults.set(updated, forKey: questionKey(for: slot))
+            didTransition = true
         }
+        return didTransition
     }
 
-    func markExpired(slot: Slot) {
+    /// Transitions an .active question to .expired.
+    /// Returns `true` if the transition actually happened — see `markAnswered` for rationale.
+    @discardableResult
+    func markExpired(slot: Slot) -> Bool {
         // The .active guard makes the read-check-write atomic within the barrier,
         // closing the TOCTOU window: if markAnswered already committed its write
         // between handleExpirationDelivery's loadActiveQuestion and this call,
         // we bail out instead of clobbering the answered state.
+        var didTransition = false
         queue.sync(flags: .barrier) {
             guard let data = defaults.data(forKey: questionKey(for: slot)),
                   var state = try? decoder.decode(QuestionState.self, from: data) else { return }
@@ -66,7 +81,9 @@ final class StateStore {
             state.status = .expired
             guard let updated = try? encoder.encode(state) else { return }
             defaults.set(updated, forKey: questionKey(for: slot))
+            didTransition = true
         }
+        return didTransition
     }
 
     // MARK: - Streak
