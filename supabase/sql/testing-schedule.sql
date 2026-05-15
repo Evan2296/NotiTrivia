@@ -1,0 +1,5 @@
+select cron.unschedule(jobid) from cron.job;
+select cron.schedule('send-hourly-questions', '0 * * * *',
+$$ select net.http_post(url := 'https://hzlrqxcxcgdvocfaiuof.supabase.co/functions/v1/send-questions', headers := '{"Content-Type":"application/json","Authorization":"Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imh6bHJxeGN4Y2dkdm9jZmFpdW9mIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc3Nzk2NTI3MSwiZXhwIjoyMDkzNTQxMjcxfQ.Ttujbro4n9dsZr_gBJva6PAv2C-XFVbpe3Bf132LDpo"}'::jsonb, body := '{}'::jsonb); $$);
+select cron.schedule('send-hourly-expirations', '10 * * * *',
+$$ select net.http_post(url := 'https://hzlrqxcxcgdvocfaiuof.supabase.co/functions/v1/send-expirations', headers := '{"Content-Type":"application/json","Authorization":"Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imh6bHJxeGN4Y2dkdm9jZmFpdW9mIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc3Nzk2NTI3MSwiZXhwIjoyMDkzNTQxMjcxfQ.Ttujbro4n9dsZr_gBJva6PAv2C-XFVbpe3Bf132LDpo"}'::jsonb, body := '{}'::jsonb); $$);
