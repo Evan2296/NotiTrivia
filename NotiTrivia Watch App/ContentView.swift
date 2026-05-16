@@ -259,14 +259,8 @@ struct ContentView: View {
     // MARK: - Actions
 
     private func refresh() {
-        // Run the expiration-reconciliation sweep FIRST so any stale .active question
-        // whose 1-hour window already elapsed gets marked expired and debits a life
-        // BEFORE we read streak/lives state for the UI. This is the critical fix for
-        // the watchOS-specific bug where `WKApplicationDelegate.didReceiveRemoteNotification`
-        // never fires for the visible-alert expiration push, so a user who ignores
-        // the expiration notification would otherwise never lose a life. The sweep
-        // catches up whenever the user opens the app — the ring will reflect the
-        // correct lives/streak the moment ContentView appears.
+        // Run the expiration sweep before reading UI state so any missed expiration
+        // is debited first — the streak ring reflects the correct values immediately.
         NotificationActionHandler.shared.reconcileExpiredQuestions()
 
         streak = StreakManager.shared.currentStreak()

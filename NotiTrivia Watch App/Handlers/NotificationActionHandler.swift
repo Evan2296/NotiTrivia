@@ -22,19 +22,14 @@ final class NotificationActionHandler: NSObject, UNUserNotificationCenterDelegat
     ) {
         let userInfo = notification.request.content.userInfo
 
-        // Real expiration pushes now arrive as visible alert pushes (apns-priority 10) and
-        // will reach this handler when the app is in the foreground. handleExpirationDelivery
-        // is idempotent — the .active guard ensures streak/lives are only debited once even
-        // if AppDelegate.didReceiveRemoteNotification already processed the same push.
-        // Practice expirations are locally scheduled and also flow through here.
+        // Expiration alerts reach this handler when the app is in the foreground.
+        // `handleExpirationDelivery` is idempotent — safe even if AppDelegate already ran.
         if userInfo["isExpiration"] as? Bool == true {
             handleExpirationDelivery(userInfo: userInfo)
         } else if userInfo["isPractice"] as? Bool != true {
             // Real question delivered in foreground — activate its state.
             engine.activateQuestion(from: userInfo)
-            // Re-register the stable category with the real choice titles as a belt-and-suspenders
-            // measure for the foreground case. The silent prep push should have already done this,
-            // but refreshing here ensures the titles are always current.
+            // Refresh stable category with real titles (belt-and-suspenders; silent prep push handles the normal case).
             if let choices = userInfo["choices"] as? [String], !choices.isEmpty {
                 let category = makeQuestionCategory(identifier: pushQuestionCategoryID, choices: choices)
                 UNUserNotificationCenter.current().getNotificationCategories { existing in
@@ -60,10 +55,8 @@ final class NotificationActionHandler: NSObject, UNUserNotificationCenterDelegat
 
         let userInfo = response.notification.request.content.userInfo
 
-        // Real expiration pushes now arrive as visible alert pushes and the user may tap them.
-        // handleExpirationDelivery is idempotent — if AppDelegate already marked the question
-        // expired when the push arrived, the .active guard bails out harmlessly here.
-        // Practice expirations are locally scheduled and also flow through here.
+        // Expiration taps flow here for both real and practice questions.
+        // `handleExpirationDelivery` is idempotent — safe if AppDelegate already ran.
         if userInfo["isExpiration"] as? Bool == true {
             handleExpirationDelivery(userInfo: userInfo)
             return
@@ -74,11 +67,9 @@ final class NotificationActionHandler: NSObject, UNUserNotificationCenterDelegat
             return
         }
 
-        // Real question tapped — activate state (handles background delivery).
+        // Activate state for background-delivered questions (idempotent).
         engine.activateQuestion(from: userInfo)
-        // Refresh the stable category with the real choice titles (idempotent).
-        // The silent prep push already did this before the notification appeared,
-        // but refreshing here keeps the category correct for any edge case.
+        // Refresh stable category with real titles (idempotent).
         if let choices = userInfo["choices"] as? [String], !choices.isEmpty {
             let category = makeQuestionCategory(identifier: pushQuestionCategoryID, choices: choices)
             UNUserNotificationCenter.current().getNotificationCategories { existing in
@@ -143,13 +134,9 @@ final class NotificationActionHandler: NSObject, UNUserNotificationCenterDelegat
     // MARK: - Outcome Application
 
     /// Persists the outcome, updates the streak, and sends a result notification.
-    ///
-    /// Gated on `store.markAnswered` returning `true` — if a racing expiration push
-    /// already transitioned the state to `.expired` between `evaluate()` returning an
-    /// outcome and this call, `markAnswered` no-ops and returns `false`. In that case
-    /// we re-show the expiration result (the user effectively missed the deadline by
-    /// a hair) instead of double-counting `handleOutcome` on top of the expiration
-    /// path's debit. This closes the boundary race that previously corrupted lives.
+    /// Gated on `store.markAnswered` returning `true` — if a racing expiration already
+    /// resolved the slot, `markAnswered` returns `false` and we re-show the expiration
+    /// result instead, preventing a double debit.
     private func applyOutcome(_ outcome: Outcome, slot: Slot, correctAnswer: String) {
         guard store.markAnswered(slot: slot, outcome: outcome) else {
             // A racing expiration already resolved this slot — show what actually applied.
@@ -197,12 +184,9 @@ final class NotificationActionHandler: NSObject, UNUserNotificationCenterDelegat
 
     // MARK: - Expiration Delivery
 
-    /// Marks a question as expired when an expiration notification is delivered or tapped.
-    /// Handles both server-sent alert pushes (real questions) and locally scheduled
-    /// expiration notifications (practice questions). Idempotent — `markExpired` returns
-    /// `false` if the state was already resolved (e.g. by a racing answer-tap), and we
-    /// gate `handleOutcome` and the streak-reset follow-up on that result so the lives
-    /// counter is never double-debited.
+    /// Marks a question expired when its expiration notification is delivered or tapped.
+    /// Idempotent — `markExpired` returns `false` if the state was already resolved,
+    /// preventing a double debit against a racing answer-tap.
     private func handleExpirationDelivery(userInfo: [AnyHashable: Any]) {
         guard
             let slotRaw = userInfo["slot"] as? String,
@@ -221,26 +205,12 @@ final class NotificationActionHandler: NSObject, UNUserNotificationCenterDelegat
 
     // MARK: - Reconciliation Sweep
 
-    /// Defense-in-depth for the watchOS expiration-push gap.
+    /// Foreground sweep that closes the watchOS expiration-push gap.
     ///
-    /// On watchOS, `WKApplicationDelegate.didReceiveRemoteNotification` does NOT fire for
-    /// visible alert pushes — only for pure background (content-available:1, priority 5)
-    /// pushes. Our `send-expirations` Edge Function sends a visible alert push (so the
-    /// user actually sees "Time Expired — the correct answer was X"), which means the
-    /// AppDelegate background handler is unreachable for it. The push only debits lives
-    /// when (a) the watch is in foreground and `willPresent` runs, or (b) the user taps
-    /// the notification and `didReceive` runs. A user who ignores the expiration push
-    /// completely would otherwise never lose a life — bypassing the entire lives system.
-    ///
-    /// This sweep closes that gap: every time the app comes to foreground, it scans both
-    /// slots, and for any QuestionState still in `.active` whose 1-hour answer window
-    /// has elapsed, it marks expired and debits one life — guaranteeing the penalty
-    /// catches up next time the user opens the watch app.
-    ///
-    /// Combined with the silent-prep-push activation in `AppDelegate` (which writes the
-    /// QuestionState the moment the prep push arrives, before the visible question
-    /// notification is even shown), this guarantees a QuestionState exists for the sweep
-    /// to find — even if the user never taps anything.
+    /// On watchOS, the background handler doesn't fire for visible alert pushes, so a user
+    /// who ignores the expiration notification entirely would never lose a life. This sweep
+    /// runs every time the app comes to foreground and marks any `.active` question past
+    /// its 1-hour window as expired, debiting a life at that point.
     func reconcileExpiredQuestions() {
         let expirationWindow: TimeInterval = 3600
         let now = Date()
@@ -257,16 +227,10 @@ final class NotificationActionHandler: NSObject, UNUserNotificationCenterDelegat
         }
     }
 
-    /// Shared helper that applies the streak/lives delta for an expiration and posts
-    /// the UI refresh notification. Used by both `handleExpirationDelivery` (real-time
-    /// push) and `reconcileExpiredQuestions` (foreground sweep) so the on-device side
-    /// effects are identical regardless of which path catches the expiration.
-    ///
-    /// Fires `sendStreakResetNotification` only when the debit caused a full streak
-    /// reset (lives 1 → 0 → refill to 3 with streak zeroed). Routine life losses don't
-    /// fire a follow-up notification — they're visible on the watch face's lives
-    /// indicator and a second notification would be noise. A reset, however, is a
-    /// significant event we want the user to know about without opening the app.
+    /// Applies streak/lives for an expiration and posts the UI refresh notification.
+    /// Shared by `handleExpirationDelivery` and `reconcileExpiredQuestions` so both paths
+    /// produce identical on-device effects. Fires a streak-reset notification only when
+    /// lives drop to 0 and refill (a full reset) — routine life losses are silent.
     private func applyExpirationStreakChange() {
         let livesBefore = streakManager.currentLives()
         streakManager.handleOutcome(.expired)

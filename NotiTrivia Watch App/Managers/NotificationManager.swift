@@ -15,19 +15,13 @@ enum NotifID {
 
 // MARK: - Question Category
 //
-// watchOS displays action button titles from a registered UNNotificationCategory — NOT from
-// the notification content itself. Answer choices must be registered **before** the notification
-// is presented — watchOS renders the notification immediately and does not wait for async work.
+// watchOS renders action buttons from a registered UNNotificationCategory, not the notification
+// payload — so choices must be registered before the notification appears.
 //
-// Strategy for push-delivered (real) questions:
-//   • A fixed category identifier "question_category" is registered at app launch with
-//     placeholder action titles so the category always exists in the system.
-//   • When a silent prep push arrives (content-available:1, no alert), the app re-registers
-//     "question_category" with the real answer choices **before** the visible notification fires.
-//   • The Supabase edge function sends aps.category = "question_category" on both pushes,
-//     so the already-registered category matches and action buttons appear correctly.
-//
-// For practice questions we register a unique per-question category at schedule time (unchanged).
+// Real questions use a fixed "question_category" ID registered at launch with placeholder titles.
+// A silent prep push arrives just before the visible question notification and updates the category
+// with the real answer choices. Practice questions register a unique per-question category at
+// schedule time.
 
 /// The single stable category identifier used for all server-sent (real) question pushes.
 /// Must match the `aps.category` value set by the Supabase edge function.
@@ -203,14 +197,9 @@ final class NotificationManager {
 
     // MARK: - Streak Reset Notification
 
-    /// Fires a follow-up local notification when a streak reset occurs from a
-    /// server-sent expiration. The expiration push itself only carries the
-    /// "correct answer was X" text — it can't include lives/streak state
-    /// because that's tracked entirely on-device. A streak reset is a
-    /// significant event (lives reached 0, streak zeroed, lives refilled to 3)
-    /// the user should know about without having to open the app. Routine
-    /// life losses don't fire this — they're already visible on the ring's
-    /// lives indicator next time the user opens the watch app.
+    /// Fires a local notification when a full streak reset occurs (lives hit 0, streak zeroed,
+    /// lives refilled). The expiration push can't carry on-device lives state, so this local
+    /// notification surfaces the reset without requiring the user to open the app.
     func sendStreakResetNotification() {
         let content = UNMutableNotificationContent()
         content.title = "💔 Streak Reset"

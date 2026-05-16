@@ -74,11 +74,8 @@ Deno.serve(async (req: Request) => {
     const results = [];
 
     for (const activeQuestion of pendingExpirations) {
-      // Atomically claim this expiration by flipping expiration_sent = true BEFORE
-      // sending the push, with is_answered = false in the WHERE clause.
-      // If mark-answered already ran and set is_answered = true, this update matches
-      // 0 rows and `claimed` will be null — we skip the push entirely, closing the
-      // race window between the initial SELECT and the push delivery.
+      // Claim atomically: only updates if is_answered is still false. If mark-answered
+      // already ran, this matches 0 rows and `claimed` is null — skip the push.
       const { data: claimed } = await supabase
         .from("active_questions")
         .update({ expiration_sent: true })
@@ -94,11 +91,7 @@ Deno.serve(async (req: Request) => {
       }
 
       for (const device of devices ?? []) {
-        // Alert push — delivers reliably even when the watch is inactive/charging.
-        // content-available:1 ensures AppDelegate.didReceiveRemoteNotification fires
-        // to mark the question expired and update streak/lives on-device.
-        // The push itself IS the expiration notification — the app does not fire
-        // an additional local result notification for server-sent expirations.
+        // Alert push (priority 10) — delivers even when the watch is inactive or charging.
         const payload = {
           aps: {
             alert: {

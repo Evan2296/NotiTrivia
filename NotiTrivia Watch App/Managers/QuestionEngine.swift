@@ -83,10 +83,8 @@ final class QuestionEngine {
             break
         }
 
-        // Passive fallback safety net only — the primary expiration mechanism is the silent
-        // background push from Supabase handled in AppDelegate.didReceiveRemoteNotification.
-        // This check only fires if the server push never arrived (e.g. the device was offline
-        // for the entire 1-hour window) and the user then opens the app and taps something.
+        // Passive fallback — returns .expired if the server push never arrived
+        // (e.g. device was offline for the full window) and the user taps the question.
         if Date() > state.deliveredAt.addingTimeInterval(3600) {
             return .expired
         }

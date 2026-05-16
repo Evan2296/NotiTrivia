@@ -20,9 +20,7 @@ final class StateStore {
 
     func saveActiveQuestion(_ state: QuestionState, slot: Slot) {
         guard let data = try? encoder.encode(state) else { return }
-        // sync write for durability: guarantees question state is persisted before this
-        // function returns, so a watchOS process suspension immediately after activateQuestion
-        // cannot silently drop the state and leave the question unrecoverable.
+        // Sync write ensures state is committed before returning, guarding against process suspension.
         let key = questionKey(for: slot)
         queue.sync(flags: .barrier) {
             defaults.set(data, forKey: key)
@@ -37,21 +35,13 @@ final class StateStore {
     }
 
     /// Transitions an .active question to .answered(outcome).
-    /// Returns `true` if the transition actually happened, `false` if the state
-    /// did not exist or was already resolved (answered/expired) — letting callers
-    /// gate side-effects (`handleOutcome`, `reportAnswer`, result notifications)
-    /// so they only run when this call is the one that committed the change.
-    /// This closes the boundary-race window where a simultaneous expiration push
-    /// could otherwise cause `StreakManager.handleOutcome` to run twice.
+    /// Returns `true` if the transition happened, `false` if the state was already
+    /// resolved — callers gate all side-effects on this result to prevent double debits
+    /// from a racing expiration push.
     @discardableResult
     func markAnswered(slot: Slot, outcome: Outcome) -> Bool {
-        // sync write: guarantees the state is committed before this function returns,
-        // so any subsequent loadActiveQuestion call (e.g. in handleExpirationDelivery)
-        // will always see the up-to-date .answered status and not let a server-sent
-        // expiration push slip through the race window.
-        //
-        // The .active guard makes the read-check-write atomic within the barrier,
-        // preventing an expiration that already committed from being overwritten.
+        // Sync barrier makes the read-check-write atomic, preventing a concurrent
+        // expiration from overwriting a committed answer (and vice versa).
         var didTransition = false
         queue.sync(flags: .barrier) {
             guard let data = defaults.data(forKey: questionKey(for: slot)),
@@ -66,13 +56,10 @@ final class StateStore {
     }
 
     /// Transitions an .active question to .expired.
-    /// Returns `true` if the transition actually happened — see `markAnswered` for rationale.
+    /// Returns `true` if the transition happened — see `markAnswered` for rationale.
     @discardableResult
     func markExpired(slot: Slot) -> Bool {
-        // The .active guard makes the read-check-write atomic within the barrier,
-        // closing the TOCTOU window: if markAnswered already committed its write
-        // between handleExpirationDelivery's loadActiveQuestion and this call,
-        // we bail out instead of clobbering the answered state.
+        // Atomic barrier prevents clobbering a committed `markAnswered` write.
         var didTransition = false
         queue.sync(flags: .barrier) {
             guard let data = defaults.data(forKey: questionKey(for: slot)),
@@ -90,10 +77,7 @@ final class StateStore {
 
     func saveStreak(_ streak: StreakState) {
         guard let data = try? encoder.encode(streak) else { return }
-        // sync write for durability parity with markAnswered/markExpired:
-        // guarantees the streak is persisted before the caller returns,
-        // so a watchOS process suspension immediately after handleOutcome
-        // cannot silently drop the update.
+        // Sync write for durability parity with markAnswered/markExpired.
         queue.sync(flags: .barrier) {
             defaults.set(data, forKey: "streakState")
         }

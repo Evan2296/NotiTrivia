@@ -16,37 +16,19 @@ final class AppDelegate: NSObject, WKApplicationDelegate {
 
     /// Called when a remote push arrives while the app is in the background.
     ///
-    /// Two distinct push types are handled here, checked in order:
-    ///
-    /// 1. **Expiration push** — sent by the Supabase `send-expirations` Edge Function after the
-    ///    1-hour answer window closes. Arrives as a visible alert push (apns-priority 10) so it
-    ///    delivers reliably even when the watch is inactive or charging. The push itself is the
-    ///    expiration notification — no local result notification is fired here. This handler only
-    ///    marks the question expired and updates streak/lives on-device.
-    ///
-    /// 2. **Silent prep push** — sent by `send-questions` just before the visible question
-    ///    notification. Payload contains a `choices` array. We use this window to pre-register the
-    ///    stable "question_category" with real answer-choice titles so watchOS can render the action
-    ///    buttons when the visible notification appears.
+    /// Handles two push types: (1) an expiration alert push from `send-expirations` that marks
+    /// the question expired and updates streak/lives; (2) a silent prep push from `send-questions`
+    /// that pre-registers answer-choice action buttons before the visible question notification
+    /// appears.
     func didReceiveRemoteNotification(
         _ userInfo: [AnyHashable: Any],
         fetchCompletionHandler completionHandler: @escaping (WKBackgroundFetchResult) -> Void
     ) {
-        // CASE 1 — Expiration push from Supabase send-expirations Edge Function.
-        //
-        // ⚠️ Per Apple's docs, this handler does NOT fire for visible alert pushes on
-        // watchOS — only for pure background pushes (content-available:1, priority 5).
-        // Our expiration push is a visible alert (so the watch displays "Time Expired"
-        // even if the app is suspended), so this branch is effectively unreachable in
-        // production today. It's kept in place for two reasons:
-        //   1. Defense in depth — if Apple ever changes this behavior, the code is correct.
-        //   2. The actual lives debit for missed expirations now flows through
-        //      `NotificationActionHandler.reconcileExpiredQuestions`, invoked when the
-        //      watch app comes to foreground, plus the existing willPresent/didReceive
-        //      paths in the action handler. See that file for the full rationale.
-        //
-        // The branch is also gated on `markExpired` returning `true` so a racing
-        // answer-tap can never cause `handleOutcome(.expired)` to double-debit.
+        // CASE 1 — Expiration push. On watchOS this handler only fires for background
+        // pushes, not visible alert pushes, so this branch is a defensive fallback.
+        // The primary expiration path is `reconcileExpiredQuestions` (foreground sweep)
+        // and the willPresent/didReceive handlers. `markExpired` gates the debit so a
+        // racing answer-tap can never cause a double debit.
         if userInfo["isExpiration"] as? Bool == true {
             guard
                 let slotRaw = userInfo["slot"] as? String,
@@ -77,23 +59,9 @@ final class AppDelegate: NSObject, WKApplicationDelegate {
             return
         }
 
-        // CRITICAL: Eagerly write the QuestionState from the silent prep push.
-        //
-        // Previously, QuestionState was only created when the user tapped the visible
-        // notification or when willPresent fired (foreground only). If the user ignored
-        // the question entirely, no state was ever written — and then when the expiration
-        // push fired 1 hour later, every handler bailed out at the `loadActiveQuestion`
-        // guard because no state existed. The user lost no life. That broke the entire
-        // lives system: users could avoid all penalties simply by ignoring notifications.
-        //
-        // Now the state is written the moment the silent prep push arrives, guaranteeing:
-        //   • the visible push's tap-to-answer flow has state to evaluate against,
-        //   • the foreground-sweep `reconcileExpiredQuestions` has state to debit a life
-        //     against the next time the user opens the watch app,
-        //   • the AppDelegate expiration branch (if it ever fires) finds state to expire.
-        //
-        // `activateQuestion` is idempotent and self-validating, so missing fields in the
-        // payload are silently ignored without polluting state.
+        // Eagerly write QuestionState from the silent prep push so the answer flow,
+        // expiration sweep, and any AppDelegate expiration branch all have state to
+        // evaluate — even if the user never taps anything. `activateQuestion` is idempotent.
         QuestionEngine.shared.activateQuestion(from: userInfo)
 
         // Always use the stable, pre-known category ID so it matches aps.category on the
@@ -133,17 +101,12 @@ struct NotiTrivia_Watch_AppApp: App {
         // Delegate must be set before any notifications can fire.
         UNUserNotificationCenter.current().delegate = NotificationActionHandler.shared
 
-        // Pre-register the stable push-question category with placeholder action titles.
-        // This guarantees "question_category" is always known to the system so that when
-        // a visible push arrives with aps.category = "question_category", watchOS can
-        // immediately render the action buttons — even if the silent prep push hasn't
-        // updated the titles yet (e.g. very first launch).
+        // Pre-register the stable category with placeholder titles so action buttons
+        // always exist — even if the silent prep push hasn't arrived yet (first launch).
         let placeholders = ["Option A", "Option B", "Option C", "Option D"]
         let placeholderCategory = makeQuestionCategory(identifier: pushQuestionCategoryID, choices: placeholders)
         UNUserNotificationCenter.current().getNotificationCategories { existing in
-            // Only seed the placeholder if the category hasn't been registered yet.
-            // Once a real silent push has updated it with real titles we don't want
-            // to overwrite it with placeholders on every subsequent launch.
+            // Don't overwrite a real registration with placeholders on subsequent launches.
             if !existing.contains(where: { $0.identifier == pushQuestionCategoryID }) {
                 var merged = existing
                 merged.insert(placeholderCategory)
