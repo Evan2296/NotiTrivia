@@ -10,7 +10,10 @@ final class AnswerReportingManager {
 
     /// POSTs the answered slot identifier to the Supabase mark-answered endpoint
     /// so the server knows not to send an expiration push for that question.
-    func reportAnswer(slot: String) {
+    /// `completion` is called once the network response (or error) is received —
+    /// callers should pass the notification `completionHandler` here so watchOS
+    /// keeps the extension alive until the HTTP request actually finishes.
+    func reportAnswer(slot: String, completion: @escaping () -> Void = {}) {
         guard let url = URL(string: "https://hzlrqxcxcgdvocfaiuof.supabase.co/functions/v1/mark-answered") else {
             print("[AnswerReportingManager] Invalid mark-answered URL")
             return
@@ -33,6 +36,7 @@ final class AnswerReportingManager {
         request.httpBody = httpBody
 
         URLSession.shared.dataTask(with: request) { _, response, error in
+            defer { completion() }
             if let error {
                 print("[AnswerReportingManager] Report failed: \(error)")
                 return

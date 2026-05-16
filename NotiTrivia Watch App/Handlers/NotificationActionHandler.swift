@@ -46,24 +46,31 @@ final class NotificationActionHandler: NSObject, UNUserNotificationCenterDelegat
     // MARK: - Action Response
 
     /// Called when the user taps an answer button or dismisses a notification.
+    ///
+    /// The notification `completionHandler` is intentionally NOT called via `defer`.
+    /// On watchOS, calling `completionHandler()` signals that notification processing is
+    /// done, which can cause the system to suspend the extension immediately — killing
+    /// any in-flight URLSession task before it reaches the network. Instead, every code
+    /// path explicitly calls `completionHandler()` only after all work (including the
+    /// async `mark-answered` network call) has finished.
     func userNotificationCenter(
         _ center: UNUserNotificationCenter,
         didReceive response: UNNotificationResponse,
         withCompletionHandler completionHandler: @escaping () -> Void
     ) {
-        defer { completionHandler() }
-
         let userInfo = response.notification.request.content.userInfo
 
         // Expiration taps flow here for both real and practice questions.
         // `handleExpirationDelivery` is idempotent — safe if AppDelegate already ran.
         if userInfo["isExpiration"] as? Bool == true {
             handleExpirationDelivery(userInfo: userInfo)
+            completionHandler()
             return
         }
 
         if userInfo["isPractice"] as? Bool == true {
             handlePracticeResponse(response: response, userInfo: userInfo)
+            completionHandler()
             return
         }
 
@@ -82,21 +89,31 @@ final class NotificationActionHandler: NSObject, UNUserNotificationCenterDelegat
         guard
             let slotRaw = userInfo["slot"] as? String,
             let slot = Slot(rawValue: slotRaw)
-        else { return }
+        else {
+            completionHandler()
+            return
+        }
 
         let actionID = response.actionIdentifier
 
         guard actionID != UNNotificationDefaultActionIdentifier,
               actionID != UNNotificationDismissActionIdentifier,
-              !actionID.isEmpty else { return }
+              !actionID.isEmpty else {
+            completionHandler()
+            return
+        }
 
         let answer = resolveAnswer(actionID: actionID, userInfo: userInfo)
         let correctAnswer = userInfo["correctAnswer"] as? String ?? ""
 
         if let outcome = engine.evaluate(answer: answer, slot: slot) {
-            applyOutcome(outcome, slot: slot, correctAnswer: correctAnswer)
+            // Pass completionHandler into applyOutcome so it is held open until
+            // the mark-answered network call completes, preventing watchOS from
+            // suspending the extension and killing the in-flight request.
+            applyOutcome(outcome, slot: slot, correctAnswer: correctAnswer, completion: completionHandler)
         } else {
             reshowResult(slot: slot)
+            completionHandler()
         }
     }
 
@@ -133,18 +150,25 @@ final class NotificationActionHandler: NSObject, UNUserNotificationCenterDelegat
 
     // MARK: - Outcome Application
 
-    /// Persists the outcome, updates the streak, and sends a result notification.
+    /// Persists the outcome, updates the streak, sends a result notification, and then
+    /// calls `completion` once the mark-answered network request finishes.
+    ///
+    /// `completion` is the notification's `completionHandler` — holding it open keeps
+    /// the watchOS extension alive long enough for the HTTP request to complete.
     /// Gated on `store.markAnswered` returning `true` — if a racing expiration already
     /// resolved the slot, `markAnswered` returns `false` and we re-show the expiration
     /// result instead, preventing a double debit.
-    private func applyOutcome(_ outcome: Outcome, slot: Slot, correctAnswer: String) {
+    private func applyOutcome(_ outcome: Outcome, slot: Slot, correctAnswer: String, completion: @escaping () -> Void) {
         guard store.markAnswered(slot: slot, outcome: outcome) else {
             // A racing expiration already resolved this slot — show what actually applied.
             reshowResult(slot: slot)
+            completion()
             return
         }
 
-        AnswerReportingManager.shared.reportAnswer(slot: slot.rawValue)
+        // Pass the notification completionHandler as the network completion so watchOS
+        // keeps the extension alive until mark-answered actually reaches Supabase.
+        AnswerReportingManager.shared.reportAnswer(slot: slot.rawValue, completion: completion)
 
         // Capture lives before applying the outcome so we can detect whether a streak
         // reset actually occurred. A reset happens only when lives drop to 0 and refill

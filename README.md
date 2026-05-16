@@ -40,7 +40,13 @@ Requires watchOS 10.6 and Xcode 26 or later.
 
 Clone the repo, open `NotiTrivia.xcodeproj`, select the `NotiTrivia Watch App` scheme, and run on a watch or simulator.
 
-Version 1.3.9
+Version 1.3.10
+
+---
+
+### Changelog
+
+**1.3.10** — Bug fix: answered questions no longer trigger an expiration notification. On watchOS the notification `completionHandler` was being called (via `defer`) before the async `mark-answered` network request could complete, causing the system to suspend the extension and kill the HTTP call. `is_answered` was never written to Supabase, so `send-expirations` always found the slot unanswered and sent the expiration push regardless. Fixed by threading the notification `completionHandler` through `applyOutcome` → `reportAnswer` so it is only called once the network response is received, keeping the extension alive for the full round-trip.
 
 ---
 
