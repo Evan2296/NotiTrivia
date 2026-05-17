@@ -104,6 +104,12 @@ Deno.serve(async (req: Request) => {
           isExpiration: true,
           slot: activeQuestion.slot,
           correctAnswer: activeQuestion.correct_answer,
+          // questionID and deliveredAt are required by activateQuestion() on the client.
+          // If APNs dropped the silent prep push, AppDelegate uses these fields to
+          // synthesize a QuestionState before calling markExpired, ensuring the life
+          // debit fires even when the device never received the prep push.
+          questionID: activeQuestion.question_id,
+          deliveredAt: Math.floor(new Date(activeQuestion.delivered_at).getTime() / 1000),
         };
 
         const result = await sendPush(device.device_token, payload, apnsToken, bundleId);

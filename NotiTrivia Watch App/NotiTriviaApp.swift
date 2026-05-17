@@ -38,8 +38,17 @@ final class AppDelegate: NSObject, WKApplicationDelegate {
                 return
             }
 
+            // If the silent prep push was dropped by APNs (Low Power Mode, background
+            // budget exhaustion, etc.), no QuestionState was ever written for this slot.
+            // Reconstruct it now from the expiration payload — which carries questionID
+            // and deliveredAt for exactly this fallback — so markExpired has an .active
+            // state to transition and the life debit path can proceed normally.
+            if StateStore.shared.loadActiveQuestion(slot: slot) == nil {
+                QuestionEngine.shared.activateQuestion(from: userInfo)
+            }
+
             guard StateStore.shared.markExpired(slot: slot) else {
-                // Already resolved (answered or expired) — this push is a no-op.
+                // State was already resolved by a concurrent answer-tap or prior expiration.
                 completionHandler(.noData)
                 return
             }

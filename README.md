@@ -40,11 +40,13 @@ Requires watchOS 10.6 and Xcode 26 or later.
 
 Clone the repo, open `NotiTrivia.xcodeproj`, select the `NotiTrivia Watch App` scheme, and run on a watch or simulator.
 
-Version 1.3.10
+Version 1.3.11
 
 ---
 
 ### Changelog
+
+**1.3.11** — Bug fix: a life is now correctly debited when a question expires and the silent prep push was dropped by APNs (Low Power Mode, background wake-budget exhaustion, etc.). Previously, if APNs never delivered the prep push, no `QuestionState` was written to `StateStore`, and `markExpired` returned `false` — silently skipping the life debit. Fixed by: (1) adding a `loadActiveQuestion == nil` guard in `AppDelegate` CASE 1 that calls `activateQuestion(from:)` to synthesize state from the expiration push payload before `markExpired` runs; and (2) adding `questionID` and `deliveredAt` to the `send-expirations` push payload so the client has everything `activateQuestion` requires to reconstruct the state.
 
 **1.3.10** — Bug fix: answered questions no longer trigger an expiration notification. On watchOS the notification `completionHandler` was being called (via `defer`) before the async `mark-answered` network request could complete, causing the system to suspend the extension and kill the HTTP call. `is_answered` was never written to Supabase, so `send-expirations` always found the slot unanswered and sent the expiration push regardless. Fixed by threading the notification `completionHandler` through `applyOutcome` → `reportAnswer` so it is only called once the network response is received, keeping the extension alive for the full round-trip.
 
