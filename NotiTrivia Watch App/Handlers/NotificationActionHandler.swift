@@ -29,7 +29,7 @@ final class NotificationActionHandler: NSObject, UNUserNotificationCenterDelegat
         } else if userInfo["isPractice"] as? Bool != true {
             // Real question delivered in foreground — activate its state.
             engine.activateQuestion(from: userInfo)
-            // Refresh stable category with real titles (belt-and-suspenders; silent prep push handles the normal case).
+            // Fallback: re-register category with real titles in case the silent prep push was dropped.
             if let choices = userInfo["choices"] as? [String], !choices.isEmpty {
                 let category = makeQuestionCategory(identifier: pushQuestionCategoryID, choices: choices)
                 UNUserNotificationCenter.current().getNotificationCategories { existing in
@@ -76,7 +76,7 @@ final class NotificationActionHandler: NSObject, UNUserNotificationCenterDelegat
 
         // Activate state for background-delivered questions (idempotent).
         engine.activateQuestion(from: userInfo)
-        // Refresh stable category with real titles (idempotent).
+        // Re-register category with real titles (idempotent fallback for a dropped silent prep push).
         if let choices = userInfo["choices"] as? [String], !choices.isEmpty {
             let category = makeQuestionCategory(identifier: pushQuestionCategoryID, choices: choices)
             UNUserNotificationCenter.current().getNotificationCategories { existing in

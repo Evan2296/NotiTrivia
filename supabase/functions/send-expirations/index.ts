@@ -1,3 +1,12 @@
+/**
+ * send-expirations — Supabase Edge Function
+ *
+ * Sends alert pushes to all registered devices for any active questions that have
+ * not yet been answered or expired, then atomically marks them as expiration-sent
+ * to prevent duplicate pushes. Skips any slot already resolved by mark-answered.
+ *
+ * Triggered by pg_cron: 1 hour after each send-questions invocation.
+ */
 import { createClient } from "jsr:@supabase/supabase-js@2";
 import { SignJWT, importPKCS8 } from "https://deno.land/x/jose@v4.14.4/index.ts";
 
@@ -48,9 +57,8 @@ Deno.serve(async (req: Request) => {
     const bundleId = Deno.env.get("APNS_BUNDLE_ID")!;
     const apnsToken = await getAPNsToken();
 
-    // Fetch all slots that haven't been expired yet.
-    // This works for both production (1hr cron offset) and testing (10min cron offset)
-    // without needing to guess the slot from UTC hour.
+    // Fetch all slots that are still pending expiration.
+    // Querying by flag rather than UTC hour works for both production and testing schedules.
     const { data: pendingExpirations, error } = await supabase
       .from("active_questions")
       .select("*")
@@ -74,8 +82,8 @@ Deno.serve(async (req: Request) => {
     const results = [];
 
     for (const activeQuestion of pendingExpirations) {
-      // Claim atomically: only updates if is_answered is still false. If mark-answered
-      // already ran, this matches 0 rows and `claimed` is null — skip the push.
+      // Atomic claim: only updates if mark-answered hasn't already resolved this slot.
+      // If it has, 0 rows match and `claimed` is null — skip the push to prevent a double expiration.
       const { data: claimed } = await supabase
         .from("active_questions")
         .update({ expiration_sent: true })
@@ -91,7 +99,7 @@ Deno.serve(async (req: Request) => {
       }
 
       for (const device of devices ?? []) {
-        // Alert push (priority 10) — delivers even when the watch is inactive or charging.
+        // Priority-10 alert push delivers even when the watch is inactive or charging.
         const payload = {
           aps: {
             alert: {
@@ -105,9 +113,8 @@ Deno.serve(async (req: Request) => {
           slot: activeQuestion.slot,
           correctAnswer: activeQuestion.correct_answer,
           // questionID and deliveredAt are required by activateQuestion() on the client.
-          // If APNs dropped the silent prep push, AppDelegate uses these fields to
-          // synthesize a QuestionState before calling markExpired, ensuring the life
-          // debit fires even when the device never received the prep push.
+          // If APNs dropped the silent prep push, AppDelegate uses these fields to reconstruct
+          // a QuestionState before calling markExpired, so the life debit fires regardless.
           questionID: activeQuestion.question_id,
           deliveredAt: Math.floor(new Date(activeQuestion.delivered_at).getTime() / 1000),
         };

@@ -59,7 +59,7 @@ final class StateStore {
     /// Returns `true` if the transition happened — see `markAnswered` for rationale.
     @discardableResult
     func markExpired(slot: Slot) -> Bool {
-        // Atomic barrier prevents clobbering a committed `markAnswered` write.
+        // Barrier makes the read-check-write atomic, preventing a concurrent markAnswered write from being overwritten.
         var didTransition = false
         queue.sync(flags: .barrier) {
             guard let data = defaults.data(forKey: questionKey(for: slot)),
@@ -77,7 +77,7 @@ final class StateStore {
 
     func saveStreak(_ streak: StreakState) {
         guard let data = try? encoder.encode(streak) else { return }
-        // Sync write for durability parity with markAnswered/markExpired.
+        // Sync barrier write for durability parity with markAnswered/markExpired.
         queue.sync(flags: .barrier) {
             defaults.set(data, forKey: "streakState")
         }

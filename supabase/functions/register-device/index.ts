@@ -1,3 +1,10 @@
+/**
+ * register-device — Supabase Edge Function
+ *
+ * Upserts a device's APNs token and IANA timezone identifier into the `devices` table.
+ * Re-registering an existing token updates its `last_seen` timestamp and timezone.
+ * Called by the watchOS app each time it successfully registers for remote notifications.
+ */
 import { createClient } from "jsr:@supabase/supabase-js@2";
 
 Deno.serve(async (req: Request) => {

@@ -1,3 +1,14 @@
+/**
+ * send-questions — Supabase Edge Function
+ *
+ * Selects one question per invocation and delivers it to all registered devices
+ * via a two-push sequence:
+ *   1. Silent background push — wakes the app to pre-register the answer-choice
+ *      notification category before the visible notification appears.
+ *   2. Visible alert push (after a 5 s delay) — the question the user sees and taps.
+ *
+ * Triggered by pg_cron: noon ET (UTC 16:00) and 6 PM ET (UTC 22:00).
+ */
 import { createClient } from "jsr:@supabase/supabase-js@2";
 import { SignJWT, importPKCS8 } from "https://deno.land/x/jose@v4.14.4/index.ts";
 
@@ -35,8 +46,7 @@ async function sendPush(
   return { ok: res.ok, status: res.status, body: await res.text() };
 }
 
-// Picks and increments exactly ONE question — fixes the double-increment bug
-// where the old pickTwoQuestions bumped times_used for both slots on every call.
+/** Selects a random question from the least-used pool and increments its usage count. */
 async function pickOneQuestion(supabase: any) {
   const { data: minRow } = await supabase
     .from("questions")
@@ -97,13 +107,13 @@ Deno.serve(async (req: Request) => {
       });
     }
 
-    // Determine slot from UTC hour, pick exactly one question for it
+    // Determine slot from UTC hour and pick exactly one question for it.
     const utcHour = new Date().getUTCHours();
     const slot: "noon" | "evening" = utcHour === 22 ? "evening" : "noon";
     const question = await pickOneQuestion(supabase);
     const deliveredAt = Math.floor(Date.now() / 1000);
 
-    // Store what was sent so send-expirations knows the correct answer
+    // Persist the active question so send-expirations knows the correct answer.
     await supabase
       .from("active_questions")
       .upsert({
@@ -118,7 +128,7 @@ Deno.serve(async (req: Request) => {
 
     const results = [];
 
-    // Push 1: Silent prep push — wakes app to register question_category
+    // Push 1: Silent background push — wakes app to register question_category before the visible push appears.
     for (const device of devices) {
       const silentPayload = {
         aps: { "content-available": 1 },
@@ -135,10 +145,10 @@ Deno.serve(async (req: Request) => {
       results.push({ token: device.device_token.slice(-6), push: "silent", ...result });
     }
 
-    // Wait for devices to register their categories
+    // Wait for devices to register their categories before sending the visible push.
     await sleep(5000);
 
-    // Push 2: Visible question notification
+    // Push 2: Visible question notification.
     for (const device of devices) {
       const visiblePayload = {
         aps: {

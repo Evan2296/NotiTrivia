@@ -59,12 +59,12 @@ struct ContentView: View {
     )
 
     var body: some View {
-        // GeometryReader gives us real screen pixel dimensions, bypassing watchOS
-        // safe-area layout frame quirks that break overlay/ZStack alignment anchors.
+        // GeometryReader gives us real screen pixel dimensions, bypassing watchOS safe-area
+        // layout quirks that would otherwise break overlay/ZStack alignment anchors.
         GeometryReader { geo in
 
             // MARK: - Proportional layout constants (all derived from geo.size)
-            // Tuned so every element stays in its correct corner on all watch sizes:
+            // Tuned so every element stays in its correct corner across all watch sizes:
             // 40 mm (~162 × 197 pt), 44 mm (~184 × 224 pt),
             // 45 mm (~198 × 242 pt), Ultra (~205 × 251 pt).
             let w = geo.size.width
@@ -155,7 +155,6 @@ struct ContentView: View {
                     showHelp = true
                 } label: {
                     ZStack {
-                        // Gradient ring matching main ring style
                         Circle()
                             .stroke(ringGradient, lineWidth: helpStroke)
                             .frame(width: helpSize, height: helpSize)
@@ -197,7 +196,6 @@ struct ContentView: View {
                     sendTest()
                 } label: {
                     ZStack {
-                        // Gradient ring outline matching main ring style
                         Circle()
                             .stroke(ringGradient, lineWidth: boltStroke)
                             .frame(width: boltSize, height: boltSize)
@@ -242,11 +240,9 @@ struct ContentView: View {
                 }
             }
         }
-        // Refresh when app comes back to foreground
         .onChange(of: scenePhase) { _, newPhase in
             if newPhase == .active { refresh() }
         }
-        // Refresh streak immediately after an answer is processed
         .onReceive(NotificationCenter.default.publisher(for: .streakDidChange)) { _ in
             DispatchQueue.main.async {
                 streak = StreakManager.shared.currentStreak()
@@ -259,8 +255,7 @@ struct ContentView: View {
     // MARK: - Actions
 
     private func refresh() {
-        // Run the expiration sweep before reading UI state so any missed expiration
-        // is debited first — the streak ring reflects the correct values immediately.
+        // Sweep for missed expirations first so the streak ring reflects correct values immediately.
         NotificationActionHandler.shared.reconcileExpiredQuestions()
 
         streak = StreakManager.shared.currentStreak()

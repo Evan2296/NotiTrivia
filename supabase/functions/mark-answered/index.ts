@@ -1,3 +1,10 @@
+/**
+ * mark-answered — Supabase Edge Function
+ *
+ * Marks the active question for a given slot (`noon` or `evening`) as answered in
+ * the database, preventing send-expirations from sending a redundant expiration push.
+ * Called by the watchOS client immediately after the user taps an answer button.
+ */
 import { createClient } from "jsr:@supabase/supabase-js@2";
 
 Deno.serve(async (req: Request) => {

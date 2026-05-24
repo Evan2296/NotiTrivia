@@ -13,19 +13,15 @@ struct HelpView: View {
     )
 
     var body: some View {
-        // ZStack lets Color.black fill the sheet while the VStack
-        // sizes to its natural content height — prevents Text truncation.
         ZStack(alignment: .topLeading) {
             Color.black.ignoresSafeArea()
 
             VStack(alignment: .leading, spacing: 8) {
 
-                // MARK: - Title
                 Text("How to Play")
                     .font(.system(size: 14, weight: .semibold))
                     .foregroundStyle(numberGradient)
 
-                // MARK: - Body text
                 Text("Two questions daily, noon & 6 PM. Answer correctly in the notification within an hour to grow your streak and gain a life. Wrong or missed costs a life. Lose all 3 and your streak resets.")
                     .font(.system(size: 11))
                     .foregroundStyle(.white)
