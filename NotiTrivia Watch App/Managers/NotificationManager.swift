@@ -18,16 +18,25 @@ enum NotifID {
 // watchOS renders action buttons from a registered UNNotificationCategory, not the notification
 // payload — so choices must be registered before the notification appears.
 //
-// Real questions use a fixed "question_category" ID registered at launch with placeholder titles.
-// A silent prep push arrives just before the visible question notification and updates the category
-// with the real answer choices. Practice questions register a unique per-question category at
-// schedule time.
+// Real questions use a UNIQUE per-question category ID ("question_category_<questionID>"). The
+// silent prep push arrives before the visible question notification and registers that category
+// with the real answer choices. Because the ID is unique per question, a visible push can never
+// inherit a previous question's buttons — if the prep push is dropped, the worst case is "no
+// buttons" rather than the old question's "wrong buttons". Practice questions register a unique
+// per-question category at schedule time.
 
-/// The single stable category identifier used for all server-sent (real) question pushes.
-/// Must match the `aps.category` value set by the Supabase edge function.
-let pushQuestionCategoryID = "question_category"
+/// Shared prefix for every server-sent (real) question category. Used both to build the
+/// per-question ID and to identify stale categories that should be purged on re-registration.
+let pushQuestionCategoryPrefix = "question_category"
+
+/// Builds the per-question category identifier. Must match the `aps.category` value set by the
+/// Supabase `send-questions` edge function (`question_category_<questionID>`).
+func pushQuestionCategoryID(forQuestionID questionID: String) -> String {
+    "\(pushQuestionCategoryPrefix)_\(questionID)"
+}
 
 func answerActionID(_ index: Int) -> String { "answer_\(index)" }
+
 
 func makeQuestionCategory(identifier: String, choices: [String]) -> UNNotificationCategory {
     let actions = choices.enumerated().map { i, choice in
@@ -70,6 +79,31 @@ final class NotificationManager {
         let category = makeQuestionCategory(identifier: categoryID, choices: choices)
         registerCategory(category)
     }
+
+    /// Registers the per-question category for a server-sent question and purges every other
+    /// stale `question_category_*` category in the same write.
+    ///
+    /// This is the core defense against the "previous question's answer buttons" bug: because
+    /// each question gets a unique category ID, removing all other push-question categories
+    /// guarantees a dropped prep push can never leave an old question's buttons behind for a
+    /// later visible push to match. Practice categories (`practice-cat-*`) are preserved.
+    /// - Parameter completion: Called after `setNotificationCategories` is issued. The
+    ///   AppDelegate uses this to hold its background fetch handler open until the write lands.
+    func registerPushQuestionCategory(questionID: String, choices: [String], completion: (() -> Void)? = nil) {
+        let categoryID = pushQuestionCategoryID(forQuestionID: questionID)
+        let category = makeQuestionCategory(identifier: categoryID, choices: choices)
+        center.getNotificationCategories { [weak self] existing in
+            guard let self else { completion?(); return }
+            // Drop every existing push-question category (including any legacy shared one and
+            // the current ID, to replace it) — then insert only the fresh per-question category.
+            var merged = existing.filter { !$0.identifier.hasPrefix(pushQuestionCategoryPrefix) }
+            merged.insert(category)
+            self.center.setNotificationCategories(merged)
+            print("[NotificationManager] Registered '\(categoryID)' with choices: \(choices)")
+            completion?()
+        }
+    }
+
 
     // MARK: - Practice Notification
 

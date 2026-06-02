@@ -12,14 +12,14 @@ Requires watchOS 10.6 and Xcode 26 or later.
 
 **Backend — Supabase (hzlrqxcxcgdvocfaiuof.supabase.co)**
 
-- **`send-questions` Edge Function** — delivers trivia push notifications to all registered devices. Triggered by a cron job at noon and 6 pm Eastern.
+- **`send-questions` Edge Function** — delivers trivia push notifications to all registered devices. Triggered by a cron job at noon and 6 pm Eastern. Sends two silent "prep" pushes over ~45 s (so a dropped background push isn't fatal) to register a **unique per-question** answer-choice category (`question_category_<questionID>`), then the visible question push whose `aps.category` matches that unique ID.
 - **`send-expirations` Edge Function** — sends a silent background push (`content-available: 1`) to all devices after the 1-hour answer window closes (cron fires 1 hour after each question push). The push carries `isExpiration: true`, the `slot`, and the `correctAnswer`.
 
 **On-device**
 
 - `AppDelegate.didReceiveRemoteNotification` handles both silent push types:
   1. **Expiration push** — marks the question expired, updates the streak and lives, and fires a local result notification.
-  2. **Silent prep push** — pre-registers the stable `question_category` with real answer-choice titles so watchOS can render action buttons when the visible notification arrives.
+  2. **Silent prep push** — registers the unique per-question category (`question_category_<questionID>`) with real answer-choice titles and purges any stale push-question categories, so watchOS renders the correct action buttons when the visible notification arrives.
 - `QuestionEngine` contains a time-based fallback (1-hour check in `evaluate()`) that only triggers if the server expiration push never arrived (e.g. device was offline).
 - Practice question expirations are handled locally via `NotificationActionHandler`.
 
@@ -40,11 +40,14 @@ Requires watchOS 10.6 and Xcode 26 or later.
 
 Clone the repo, open `NotiTrivia.xcodeproj`, select the `NotiTrivia Watch App` scheme, and run on a watch or simulator.
 
-Version 1.3.12
+Version 1.3.13
 
 ---
 
 ### Changelog
+
+**1.3.13** — Bug fix: a question notification could occasionally show the *previous* question's answer options (e.g. the 6 pm question rendering the noon choices). Root cause: every visible push used a single shared `question_category` ID, and watchOS renders action buttons from whatever is currently registered under that ID — never from the payload. The only thing refreshing it was the silent prep push, which APNs delivers best-effort on watchOS; when it was dropped or arrived after the visible push rendered, the category still held the prior question's choices. Fixed by: (1) giving each question a **unique** category ID (`question_category_<questionID>`) set on both the prep and visible pushes, so a visible push can never match a stale category — worst case is "no buttons" instead of "wrong buttons"; (2) purging stale `question_category_*` categories whenever a new one is registered; and (3) replacing the too-short 5 s prep→visible gap with two prep pushes spread over ~45 s, so a single dropped background push is no longer fatal and slow-waking watches have time to register the category. Requires redeploying `send-questions` (`supabase functions deploy send-questions`).
+
 
 **1.3.11** — Bug fix: a life is now correctly debited when a question expires and the silent prep push was dropped by APNs (Low Power Mode, background wake-budget exhaustion, etc.). Previously, if APNs never delivered the prep push, no `QuestionState` was written to `StateStore`, and `markExpired` returned `false` — silently skipping the life debit. Fixed by: (1) adding a `loadActiveQuestion == nil` guard in `AppDelegate` CASE 1 that calls `activateQuestion(from:)` to synthesize state from the expiration push payload before `markExpired` runs; and (2) adding `questionID` and `deliveredAt` to the `send-expirations` push payload so the client has everything `activateQuestion` requires to reconstruct the state.
 

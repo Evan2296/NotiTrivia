@@ -60,10 +60,15 @@ final class AppDelegate: NSObject, WKApplicationDelegate {
         }
 
         // CASE 2 — Silent prep push from Supabase send-questions Edge Function.
-        // Arrives just before the visible question notification. Contains the answer choices
-        // so we can pre-register the stable "question_category" with real action button titles
-        // before the visible push appears, avoiding any timing race with watchOS rendering.
-        guard let choices = userInfo["choices"] as? [String], !choices.isEmpty else {
+        // Arrives before the visible question notification (sent twice over ~45s). Contains the
+        // answer choices and questionID so we can register the UNIQUE per-question category
+        // ("question_category_<questionID>") with real action button titles before the visible
+        // push appears. The unique ID guarantees the visible push can never match a stale
+        // category from a previous question.
+        guard
+            let choices = userInfo["choices"] as? [String], !choices.isEmpty,
+            let questionID = userInfo["questionID"] as? String
+        else {
             completionHandler(.noData)
             return
         }
@@ -73,18 +78,13 @@ final class AppDelegate: NSObject, WKApplicationDelegate {
         // evaluate — even if the user never taps anything. `activateQuestion` is idempotent.
         QuestionEngine.shared.activateQuestion(from: userInfo)
 
-        // Always use the stable, pre-known category ID so it matches aps.category on the
-        // visible push without any timing race.
-        let category = makeQuestionCategory(identifier: pushQuestionCategoryID, choices: choices)
-
-        UNUserNotificationCenter.current().getNotificationCategories { existing in
-            var merged = existing.filter { $0.identifier != pushQuestionCategoryID }
-            merged.insert(category)
-            UNUserNotificationCenter.current().setNotificationCategories(merged)
-            print("[AppDelegate] Registered '\(pushQuestionCategoryID)' with choices: \(choices)")
+        // Register the per-question category and purge any stale push-question categories,
+        // holding the background fetch handler open until the write is issued.
+        NotificationManager.shared.registerPushQuestionCategory(questionID: questionID, choices: choices) {
             completionHandler(.newData)
         }
     }
+
 }
 
 // MARK: - App Entry Point
@@ -110,19 +110,12 @@ struct NotiTrivia_Watch_AppApp: App {
         // Delegate must be set before any notifications can fire.
         UNUserNotificationCenter.current().delegate = NotificationActionHandler.shared
 
-        // Pre-register the stable category with placeholder titles so action buttons
-        // always exist — even if the silent prep push hasn't arrived yet (first launch).
-        let placeholders = ["Option A", "Option B", "Option C", "Option D"]
-        let placeholderCategory = makeQuestionCategory(identifier: pushQuestionCategoryID, choices: placeholders)
-        UNUserNotificationCenter.current().getNotificationCategories { existing in
-            // Don't overwrite a real registration with placeholders on subsequent launches.
-            if !existing.contains(where: { $0.identifier == pushQuestionCategoryID }) {
-                var merged = existing
-                merged.insert(placeholderCategory)
-                UNUserNotificationCenter.current().setNotificationCategories(merged)
-                print("[NotiTriviaApp] Pre-registered placeholder '\(pushQuestionCategoryID)'")
-            }
-        }
+        // No placeholder category is pre-registered: real questions use a UNIQUE per-question
+        // category ID ("question_category_<questionID>") that can't be known until the silent
+        // prep push arrives. Registering a generic placeholder would be useless (it could never
+        // match a per-question `aps.category`) and risks showing meaningless "Option A/B/C/D"
+        // buttons. The prep push registers the correct per-question category before the visible
+        // notification renders.
 
         UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge]) { granted, error in
             if let error {

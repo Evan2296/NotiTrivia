@@ -2,10 +2,14 @@
  * send-questions — Supabase Edge Function
  *
  * Selects one question per invocation and delivers it to all registered devices
- * via a two-push sequence:
- *   1. Silent background push — wakes the app to pre-register the answer-choice
- *      notification category before the visible notification appears.
- *   2. Visible alert push (after a 5 s delay) — the question the user sees and taps.
+ * via a prep-then-visible push sequence:
+ *   1. Two silent background "prep" pushes (~0s and ~20s) — wake the app to register a
+ *      UNIQUE per-question answer-choice category (`question_category_<questionID>`) before
+ *      the visible notification appears. Sending twice over a generous lead time tolerates
+ *      best-effort background-push drops on watchOS.
+ *   2. Visible alert push (after ~45 s) — the question the user sees and taps. Its
+ *      `aps.category` matches the per-question category so a dropped prep push can never
+ *      surface a previous question's answer buttons.
  *
  * Triggered by pg_cron: noon ET (UTC 16:00) and 6 PM ET (UTC 22:00).
  */
@@ -128,37 +132,56 @@ Deno.serve(async (req: Request) => {
 
     const results = [];
 
-    // Push 1: Silent background push — wakes app to register question_category before the visible push appears.
-    for (const device of devices) {
-      const silentPayload = {
-        aps: { "content-available": 1 },
-        questionID: question.id,
-        choices: question.choices,
-        correctAnswer: question.correct,
-        slot,
-        deliveredAt,
-        isPrepPush: true,
-      };
+    // Per-question category ID. watchOS renders a notification's answer buttons from the
+    // UNNotificationCategory registered under this exact ID on-device — never from the push
+    // payload. Using a UNIQUE ID per question guarantees a visible push can never inherit a
+    // previous question's buttons: the worst case (prep push dropped) becomes "no buttons",
+    // never the old question's "wrong buttons".
+    const categoryID = `question_category_${question.id}`;
 
-      const result = await sendPush(device.device_token, silentPayload, apnsToken, bundleId, "background");
-      console.log(`[APNs silent] token=...${device.device_token.slice(-6)} status=${result.status} body=${result.body}`);
-      results.push({ token: device.device_token.slice(-6), push: "silent", ...result });
+    // Sends the silent prep push to every device. The prep push wakes the app so it can
+    // register `categoryID` with the real answer choices before the visible push renders.
+    async function sendPrepRound(round: number) {
+      for (const device of devices) {
+        const silentPayload = {
+          aps: { "content-available": 1 },
+          questionID: question.id,
+          choices: question.choices,
+          correctAnswer: question.correct,
+          categoryID,
+          slot,
+          deliveredAt,
+          isPrepPush: true,
+        };
+
+        const result = await sendPush(device.device_token, silentPayload, apnsToken, bundleId, "background");
+        console.log(`[APNs silent r${round}] token=...${device.device_token.slice(-6)} status=${result.status} body=${result.body}`);
+        results.push({ token: device.device_token.slice(-6), push: `silent-r${round}`, ...result });
+      }
     }
 
-    // Wait for devices to register their categories before sending the visible push.
-    await sleep(5000);
+    // Two prep rounds spread over ~45s before the visible push. watchOS background
+    // (content-available) pushes are best-effort and frequently throttled/dropped, and the
+    // previous 5s gap was far too short for the watch to wake, run the extension, and commit
+    // the category. Sending twice with a generous lead time makes a single dropped background
+    // push non-fatal and gives slow-waking watches time to register the category.
+    await sendPrepRound(1);
+    await sleep(20000);
+    await sendPrepRound(2);
+    await sleep(25000);
 
-    // Push 2: Visible question notification.
+    // Visible question notification — references the per-question category by ID.
     for (const device of devices) {
       const visiblePayload = {
         aps: {
           alert: { title: "NotiTrivia", body: question.question },
           sound: "default",
-          category: "question_category",
+          category: categoryID,
         },
         questionID: question.id,
         choices: question.choices,
         correctAnswer: question.correct,
+        categoryID,
         slot,
         deliveredAt,
         isPush: true,
