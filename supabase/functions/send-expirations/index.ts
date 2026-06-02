@@ -1,11 +1,21 @@
 /**
  * send-expirations — Supabase Edge Function
  *
- * Sends alert pushes to all registered devices for any active questions that have
- * not yet been answered or expired, then atomically marks them as expiration-sent
- * to prevent duplicate pushes. Skips any slot already resolved by mark-answered.
+ * Timezone-aware expiration delivery: runs every hour and sends "time's up"
+ * pushes only to devices where it is currently 1 PM (13:00) or 7 PM (19:00)
+ * local time — exactly one hour after the noon and evening question windows.
  *
- * Triggered by pg_cron: 1 hour after each send-questions invocation.
+ * For each slot (noon / evening) that has a pending, unanswered active question,
+ * the function atomically claims the expiration and pushes only to the devices
+ * whose local time matches that slot's expiration hour:
+ *   • noon    expiration → local hour == 13
+ *   • evening expiration → local hour == 19
+ *
+ * This ensures that a user in Shanghai never gets NYC's expiration push and
+ * vice versa — everyone receives the "correct answer" reveal exactly 1 hour
+ * after their own local delivery.
+ *
+ * Triggered by pg_cron: every hour at :00 (0 * * * *).
  */
 import { createClient } from "jsr:@supabase/supabase-js@2";
 import { SignJWT, importPKCS8 } from "https://deno.land/x/jose@v4.14.4/index.ts";
@@ -43,6 +53,31 @@ async function sendPush(
   return { ok: res.ok, status: res.status, body: await res.text() };
 }
 
+/**
+ * Returns the current local hour (0–23) for the given IANA timezone identifier.
+ * Returns -1 if the timezone is invalid or unrecognised.
+ */
+function getLocalHour(timezone: string): number {
+  try {
+    const parts = new Intl.DateTimeFormat("en-US", {
+      timeZone: timezone,
+      hour: "numeric",
+      hour12: false,
+    }).formatToParts(new Date());
+    const hourStr = parts.find(p => p.type === "hour")?.value ?? "0";
+    const hour = parseInt(hourStr, 10);
+    return hour === 24 ? 0 : hour; // Intl returns "24" for midnight in some runtimes
+  } catch {
+    return -1; // invalid timezone → skip device
+  }
+}
+
+/** The local hour at which each slot's expiration is sent (delivery hour + 1). */
+const EXPIRATION_HOUR: Record<string, number> = {
+  noon:    13,
+  evening: 19,
+};
+
 Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") {
     return new Response("ok", { headers: { "Access-Control-Allow-Origin": "*" } });
@@ -58,7 +93,6 @@ Deno.serve(async (req: Request) => {
     const apnsToken = await getAPNsToken();
 
     // Fetch all slots that are still pending expiration.
-    // Querying by flag rather than UTC hour works for both production and testing schedules.
     const { data: pendingExpirations, error } = await supabase
       .from("active_questions")
       .select("*")
@@ -73,15 +107,32 @@ Deno.serve(async (req: Request) => {
       );
     }
 
+    // Fetch all devices with their timezones so we can filter by local hour.
     const { data: devices, error: devErr } = await supabase
       .from("devices")
-      .select("device_token");
+      .select("device_token, timezone");
 
     if (devErr) throw devErr;
 
     const results = [];
 
     for (const activeQuestion of pendingExpirations) {
+      const expirationHour = EXPIRATION_HOUR[activeQuestion.slot];
+      if (expirationHour === undefined) {
+        console.log(`[send-expirations] unknown slot=${activeQuestion.slot} — skipping`);
+        continue;
+      }
+
+      // Only send to devices where it is currently the expiration hour for this slot.
+      const eligibleDevices = (devices ?? []).filter(
+        d => getLocalHour(d.timezone) === expirationHour
+      );
+
+      if (eligibleDevices.length === 0) {
+        console.log(`[send-expirations] slot=${activeQuestion.slot} — no devices at local hour ${expirationHour} right now`);
+        continue;
+      }
+
       // Atomic claim: only updates if mark-answered hasn't already resolved this slot.
       // If it has, 0 rows match and `claimed` is null — skip the push to prevent a double expiration.
       const { data: claimed } = await supabase
@@ -98,7 +149,7 @@ Deno.serve(async (req: Request) => {
         continue;
       }
 
-      for (const device of devices ?? []) {
+      for (const device of eligibleDevices) {
         // Priority-10 alert push delivers even when the watch is inactive or charging.
         const payload = {
           aps: {
@@ -120,7 +171,7 @@ Deno.serve(async (req: Request) => {
         };
 
         const result = await sendPush(device.device_token, payload, apnsToken, bundleId);
-        console.log(`[APNs expiration] token=...${device.device_token.slice(-6)} slot=${activeQuestion.slot} status=${result.status} body=${result.body}`);
+        console.log(`[APNs expiration] token=...${device.device_token.slice(-6)} tz=${device.timezone} slot=${activeQuestion.slot} status=${result.status} body=${result.body}`);
         results.push({ token: device.device_token.slice(-6), slot: activeQuestion.slot, ...result });
       }
     }

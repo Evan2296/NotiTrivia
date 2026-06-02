@@ -1,8 +1,13 @@
 /**
  * send-questions — Supabase Edge Function
  *
- * Selects one question per invocation and delivers it to all registered devices
- * via a prep-then-visible push sequence:
+ * Timezone-aware question delivery: runs every hour and delivers questions
+ * only to devices where the local time is currently noon (12:00) or 6 PM (18:00).
+ * Each group (noon / evening) independently picks one question so that, e.g.,
+ * a Shanghai user and a New York user each get their own question at their
+ * respective local noon and 6 PM.
+ *
+ * Sequence per device group:
  *   1. Two silent background "prep" pushes (~0s and ~20s) — wake the app to register a
  *      UNIQUE per-question answer-choice category (`question_category_<questionID>`) before
  *      the visible notification appears. Sending twice over a generous lead time tolerates
@@ -11,7 +16,7 @@
  *      `aps.category` matches the per-question category so a dropped prep push can never
  *      surface a previous question's answer buttons.
  *
- * Triggered by pg_cron: noon ET (UTC 16:00) and 6 PM ET (UTC 22:00).
+ * Triggered by pg_cron: every hour at :00 (0 * * * *).
  */
 import { createClient } from "jsr:@supabase/supabase-js@2";
 import { SignJWT, importPKCS8 } from "https://deno.land/x/jose@v4.14.4/index.ts";
@@ -83,6 +88,102 @@ function sleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
+/**
+ * Returns the current local hour (0–23) for the given IANA timezone identifier.
+ * Returns -1 if the timezone is invalid or unrecognised.
+ */
+function getLocalHour(timezone: string): number {
+  try {
+    const parts = new Intl.DateTimeFormat("en-US", {
+      timeZone: timezone,
+      hour: "numeric",
+      hour12: false,
+    }).formatToParts(new Date());
+    const hourStr = parts.find(p => p.type === "hour")?.value ?? "0";
+    const hour = parseInt(hourStr, 10);
+    return hour === 24 ? 0 : hour; // Intl returns "24" for midnight in some runtimes
+  } catch {
+    return -1; // invalid timezone → skip device
+  }
+}
+
+/**
+ * Delivers one question to a group of devices via the prep → visible push sequence.
+ * Returns an array of result objects for logging.
+ */
+async function deliverToGroup(
+  devices: Array<{ device_token: string; timezone: string }>,
+  question: any,
+  slot: "noon" | "evening",
+  apnsToken: string,
+  bundleId: string,
+  supabase: any
+): Promise<object[]> {
+  const results: object[] = [];
+  const categoryID = `question_category_${question.id}`;
+  const deliveredAt = Math.floor(Date.now() / 1000);
+
+  // Persist the active question so send-expirations knows the correct answer.
+  await supabase
+    .from("active_questions")
+    .upsert({
+      slot,
+      question_id: question.id,
+      correct_answer: question.correct,
+      question_text: question.question,
+      delivered_at: new Date().toISOString(),
+      expiration_sent: false,
+      is_answered: false,
+    }, { onConflict: "slot" });
+
+  async function sendPrepRound(round: number) {
+    for (const device of devices) {
+      const silentPayload = {
+        aps: { "content-available": 1 },
+        questionID: question.id,
+        choices: question.choices,
+        correctAnswer: question.correct,
+        categoryID,
+        slot,
+        deliveredAt,
+        isPrepPush: true,
+      };
+      const result = await sendPush(device.device_token, silentPayload, apnsToken, bundleId, "background");
+      console.log(`[APNs silent r${round} ${slot}] token=...${device.device_token.slice(-6)} tz=${device.timezone} status=${result.status} body=${result.body}`);
+      results.push({ token: device.device_token.slice(-6), slot, push: `silent-r${round}`, ...result });
+    }
+  }
+
+  // Two prep rounds spread over ~45s before the visible push.
+  await sendPrepRound(1);
+  await sleep(20000);
+  await sendPrepRound(2);
+  await sleep(25000);
+
+  // Visible question notification — references the per-question category by ID.
+  for (const device of devices) {
+    const visiblePayload = {
+      aps: {
+        alert: { title: "NotiTrivia", body: question.question },
+        sound: "default",
+        category: categoryID,
+      },
+      questionID: question.id,
+      choices: question.choices,
+      correctAnswer: question.correct,
+      categoryID,
+      slot,
+      deliveredAt,
+      isPush: true,
+    };
+    const result = await sendPush(device.device_token, visiblePayload, apnsToken, bundleId, "alert");
+    console.log(`[APNs visible ${slot}] token=...${device.device_token.slice(-6)} tz=${device.timezone} status=${result.status} body=${result.body}`);
+    results.push({ token: device.device_token.slice(-6), slot, push: "visible", ...result });
+  }
+
+  return results;
+}
+
 Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") {
     return new Response("ok", {
@@ -111,89 +212,42 @@ Deno.serve(async (req: Request) => {
       });
     }
 
-    // Determine slot from UTC hour and pick exactly one question for it.
-    const utcHour = new Date().getUTCHours();
-    const slot: "noon" | "evening" = utcHour === 22 ? "evening" : "noon";
-    const question = await pickOneQuestion(supabase);
-    const deliveredAt = Math.floor(Date.now() / 1000);
+    // Partition devices by their current local time.
+    // noon    → local hour == 12
+    // evening → local hour == 18
+    const noonDevices    = devices.filter(d => getLocalHour(d.timezone) === 12);
+    const eveningDevices = devices.filter(d => getLocalHour(d.timezone) === 18);
 
-    // Persist the active question so send-expirations knows the correct answer.
-    await supabase
-      .from("active_questions")
-      .upsert({
-        slot,
-        question_id: question.id,
-        correct_answer: question.correct,
-        question_text: question.question,
-        delivered_at: new Date().toISOString(),
-        expiration_sent: false,
-        is_answered: false,
-      }, { onConflict: "slot" });
+    console.log(`[send-questions] total=${devices.length} noon=${noonDevices.length} evening=${eveningDevices.length}`);
 
-    const results = [];
-
-    // Per-question category ID. watchOS renders a notification's answer buttons from the
-    // UNNotificationCategory registered under this exact ID on-device — never from the push
-    // payload. Using a UNIQUE ID per question guarantees a visible push can never inherit a
-    // previous question's buttons: the worst case (prep push dropped) becomes "no buttons",
-    // never the old question's "wrong buttons".
-    const categoryID = `question_category_${question.id}`;
-
-    // Sends the silent prep push to every device. The prep push wakes the app so it can
-    // register `categoryID` with the real answer choices before the visible push renders.
-    async function sendPrepRound(round: number) {
-      for (const device of devices) {
-        const silentPayload = {
-          aps: { "content-available": 1 },
-          questionID: question.id,
-          choices: question.choices,
-          correctAnswer: question.correct,
-          categoryID,
-          slot,
-          deliveredAt,
-          isPrepPush: true,
-        };
-
-        const result = await sendPush(device.device_token, silentPayload, apnsToken, bundleId, "background");
-        console.log(`[APNs silent r${round}] token=...${device.device_token.slice(-6)} status=${result.status} body=${result.body}`);
-        results.push({ token: device.device_token.slice(-6), push: `silent-r${round}`, ...result });
-      }
+    if (noonDevices.length === 0 && eveningDevices.length === 0) {
+      return new Response(
+        JSON.stringify({ message: "No devices in a noon or evening window right now" }),
+        { status: 200, headers: { "Content-Type": "application/json" } }
+      );
     }
 
-    // Two prep rounds spread over ~45s before the visible push. watchOS background
-    // (content-available) pushes are best-effort and frequently throttled/dropped, and the
-    // previous 5s gap was far too short for the watch to wake, run the extension, and commit
-    // the category. Sending twice with a generous lead time makes a single dropped background
-    // push non-fatal and gives slow-waking watches time to register the category.
-    await sendPrepRound(1);
-    await sleep(20000);
-    await sendPrepRound(2);
-    await sleep(25000);
+    const allResults: object[] = [];
+    const deliveries: object[] = [];
 
-    // Visible question notification — references the per-question category by ID.
-    for (const device of devices) {
-      const visiblePayload = {
-        aps: {
-          alert: { title: "NotiTrivia", body: question.question },
-          sound: "default",
-          category: categoryID,
-        },
-        questionID: question.id,
-        choices: question.choices,
-        correctAnswer: question.correct,
-        categoryID,
-        slot,
-        deliveredAt,
-        isPush: true,
-      };
+    // Deliver noon questions (each group picks its own question independently).
+    if (noonDevices.length > 0) {
+      const question = await pickOneQuestion(supabase);
+      const results = await deliverToGroup(noonDevices, question, "noon", apnsToken, bundleId, supabase);
+      allResults.push(...results);
+      deliveries.push({ slot: "noon", question: question.question, devices: noonDevices.length });
+    }
 
-      const result = await sendPush(device.device_token, visiblePayload, apnsToken, bundleId, "alert");
-      console.log(`[APNs visible] token=...${device.device_token.slice(-6)} status=${result.status} body=${result.body}`);
-      results.push({ token: device.device_token.slice(-6), push: "visible", ...result });
+    // Deliver evening questions.
+    if (eveningDevices.length > 0) {
+      const question = await pickOneQuestion(supabase);
+      const results = await deliverToGroup(eveningDevices, question, "evening", apnsToken, bundleId, supabase);
+      allResults.push(...results);
+      deliveries.push({ slot: "evening", question: question.question, devices: eveningDevices.length });
     }
 
     return new Response(
-      JSON.stringify({ slot, question: question.question, devices: devices.length, results }),
+      JSON.stringify({ deliveries, results: allResults }),
       { status: 200, headers: { "Content-Type": "application/json" } }
     );
 

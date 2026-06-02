@@ -12,8 +12,8 @@ Requires watchOS 10.6 and Xcode 26 or later.
 
 **Backend — Supabase (hzlrqxcxcgdvocfaiuof.supabase.co)**
 
-- **`send-questions` Edge Function** — delivers trivia push notifications to all registered devices. Triggered by a cron job at noon and 6 pm Eastern. Sends two silent "prep" pushes over ~45 s (so a dropped background push isn't fatal) to register a **unique per-question** answer-choice category (`question_category_<questionID>`), then the visible question push whose `aps.category` matches that unique ID.
-- **`send-expirations` Edge Function** — sends a silent background push (`content-available: 1`) to all devices after the 1-hour answer window closes (cron fires 1 hour after each question push). The push carries `isExpiration: true`, the `slot`, and the `correctAnswer`.
+- **`send-questions` Edge Function** — delivers trivia push notifications to devices whose local time is currently **noon (12:00)** or **6 PM (18:00)**. Runs every hour via pg_cron (`0 * * * *`); reads each device's stored IANA timezone, computes local hour with `Intl.DateTimeFormat`, and only sends to qualifying devices. Each slot group independently picks one question. Sends two silent "prep" pushes over ~45 s to register a **unique per-question** category (`question_category_<questionID>`), then the visible question push whose `aps.category` matches that unique ID.
+- **`send-expirations` Edge Function** — sends a "time's up" push to devices whose local time is currently **1 PM (13:00)** or **7 PM (19:00)** — exactly one hour after their delivery window. Also runs every hour (`0 * * * *`). The push carries `isExpiration: true`, the `slot`, and the `correctAnswer`.
 
 **On-device**
 
@@ -40,20 +40,10 @@ Requires watchOS 10.6 and Xcode 26 or later.
 
 Clone the repo, open `NotiTrivia.xcodeproj`, select the `NotiTrivia Watch App` scheme, and run on a watch or simulator.
 
-Version 1.3.13
+Version 1.3.14
 
 ---
 
-### Changelog
-
-**1.3.13** — Bug fix: a question notification could occasionally show the *previous* question's answer options (e.g. the 6 pm question rendering the noon choices). Root cause: every visible push used a single shared `question_category` ID, and watchOS renders action buttons from whatever is currently registered under that ID — never from the payload. The only thing refreshing it was the silent prep push, which APNs delivers best-effort on watchOS; when it was dropped or arrived after the visible push rendered, the category still held the prior question's choices. Fixed by: (1) giving each question a **unique** category ID (`question_category_<questionID>`) set on both the prep and visible pushes, so a visible push can never match a stale category — worst case is "no buttons" instead of "wrong buttons"; (2) purging stale `question_category_*` categories whenever a new one is registered; and (3) replacing the too-short 5 s prep→visible gap with two prep pushes spread over ~45 s, so a single dropped background push is no longer fatal and slow-waking watches have time to register the category. Requires redeploying `send-questions` (`supabase functions deploy send-questions`).
-
-
-**1.3.11** — Bug fix: a life is now correctly debited when a question expires and the silent prep push was dropped by APNs (Low Power Mode, background wake-budget exhaustion, etc.). Previously, if APNs never delivered the prep push, no `QuestionState` was written to `StateStore`, and `markExpired` returned `false` — silently skipping the life debit. Fixed by: (1) adding a `loadActiveQuestion == nil` guard in `AppDelegate` CASE 1 that calls `activateQuestion(from:)` to synthesize state from the expiration push payload before `markExpired` runs; and (2) adding `questionID` and `deliveredAt` to the `send-expirations` push payload so the client has everything `activateQuestion` requires to reconstruct the state.
-
-**1.3.10** — Bug fix: answered questions no longer trigger an expiration notification. On watchOS the notification `completionHandler` was being called (via `defer`) before the async `mark-answered` network request could complete, causing the system to suspend the extension and kill the HTTP call. `is_answered` was never written to Supabase, so `send-expirations` always found the slot unanswered and sent the expiration push regardless. Fixed by threading the notification `completionHandler` through `applyOutcome` → `reportAnswer` so it is only called once the network response is received, keeping the extension alive for the full round-trip.
-
----
 
 ### Privacy Policy
 
