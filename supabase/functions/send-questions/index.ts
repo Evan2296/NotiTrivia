@@ -123,11 +123,20 @@ async function deliverToGroup(
   const categoryID = `question_category_${question.id}`;
   const deliveredAt = Math.floor(Date.now() / 1000);
 
+  // Build a timezone-qualified slot key such as "noon_16" (noon question delivered at
+  // UTC hour 16). Including the UTC delivery hour prevents parallel deliveries to
+  // different timezone groups from overwriting each other's active_questions row —
+  // which would cause send-expirations to reveal the wrong correct answer to users
+  // whose row was clobbered by a later-timezone group.
+  const utcHour = new Date().getUTCHours();
+  const slotKey = `${slot}_${utcHour}`;
+
   // Persist the active question so send-expirations knows the correct answer.
+  // Keyed by slotKey (not bare slot) so each timezone-group delivery has its own row.
   await supabase
     .from("active_questions")
     .upsert({
-      slot,
+      slot: slotKey,
       question_id: question.id,
       correct_answer: question.correct,
       question_text: question.question,
@@ -161,12 +170,21 @@ async function deliverToGroup(
   await sleep(25000);
 
   // Visible question notification — references the per-question category by ID.
+  //
+  // "content-available": 1 is intentionally included on this alert push. It causes
+  // didReceiveRemoteNotification(_:fetchCompletionHandler:) to fire on-device even
+  // when the app is in the background, giving the app a last-resort opportunity to
+  // register the per-question UNNotificationCategory (answer-choice action buttons)
+  // in case BOTH silent prep pushes above were dropped by watchOS (which throttles
+  // background pushes aggressively for battery life). Without this, a backgrounded
+  // app that missed both prep pushes would render the notification with no buttons.
   for (const device of devices) {
     const visiblePayload = {
       aps: {
         alert: { title: "NotiTrivia", body: question.question },
         sound: "default",
         category: categoryID,
+        "content-available": 1,
       },
       questionID: question.id,
       choices: question.choices,
@@ -199,6 +217,13 @@ Deno.serve(async (req: Request) => {
 
     const bundleId = Deno.env.get("APNS_BUNDLE_ID")!;
     const apnsToken = await getAPNsToken();
+
+    // Prune stale active_questions rows on each run to keep the table lean.
+    // Rows older than 2 hours are well past their expiration window and safe to remove.
+    await supabase
+      .from("active_questions")
+      .delete()
+      .lt("delivered_at", new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString());
 
     const { data: devices, error: devErr } = await supabase
       .from("devices")

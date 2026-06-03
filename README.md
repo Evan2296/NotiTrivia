@@ -40,7 +40,7 @@ Requires watchOS 10.6 and Xcode 26 or later.
 
 Clone the repo, open `NotiTrivia.xcodeproj`, select the `NotiTrivia Watch App` scheme, and run on a watch or simulator.
 
-Version 1.3.14
+Version 1.3.15
 
 ---
 

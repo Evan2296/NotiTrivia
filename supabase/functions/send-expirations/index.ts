@@ -117,9 +117,24 @@ Deno.serve(async (req: Request) => {
     const results = [];
 
     for (const activeQuestion of pendingExpirations) {
-      const expirationHour = EXPIRATION_HOUR[activeQuestion.slot];
+      // Slot keys are timezone-qualified, e.g. "noon_16" or "evening_4".
+      // Extract the base name ("noon" / "evening") so we can look up the local
+      // expiration hour independent of which UTC delivery hour the key carries.
+      const baseSlot = activeQuestion.slot.split("_")[0];
+      const expirationHour = EXPIRATION_HOUR[baseSlot];
       if (expirationHour === undefined) {
         console.log(`[send-expirations] unknown slot=${activeQuestion.slot} — skipping`);
+        continue;
+      }
+
+      // Skip rows that are more than 2 hours old. With the timezone-qualified slot key
+      // scheme, multiple rows can share the same base slot name (e.g. "noon_11" and
+      // "noon_16"). Without this guard, a stale "noon_11" row (delivered at UTC 11, now
+      // UTC 17) could fire an expiration for the wrong question to NYC users who are at
+      // 1 PM local time and match expirationHour == 13.
+      const deliveredAtMs = new Date(activeQuestion.delivered_at).getTime();
+      if (Date.now() - deliveredAtMs > 2 * 60 * 60 * 1000) {
+        console.log(`[send-expirations] slot=${activeQuestion.slot} stale (>2 h old) — skipping`);
         continue;
       }
 
@@ -161,7 +176,11 @@ Deno.serve(async (req: Request) => {
             "content-available": 1,
           },
           isExpiration: true,
-          slot: activeQuestion.slot,
+          // Send the BASE slot name ("noon" / "evening") — not the full slotKey ("noon_16").
+          // The Swift client's Slot enum only understands "noon"/"evening"; sending the
+          // qualified key would cause Slot(rawValue:) to return nil and silently skip
+          // expiration handling entirely.
+          slot: baseSlot,
           correctAnswer: activeQuestion.correct_answer,
           // questionID and deliveredAt are required by activateQuestion() on the client.
           // If APNs dropped the silent prep push, AppDelegate uses these fields to reconstruct

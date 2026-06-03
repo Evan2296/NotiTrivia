@@ -156,6 +156,12 @@ final class NotificationActionHandler: NSObject, UNUserNotificationCenterDelegat
     /// resolved the slot, `markAnswered` returns `false` and we re-show the expiration
     /// result instead, preventing a double debit.
     private func applyOutcome(_ outcome: Outcome, slot: Slot, correctAnswer: String, completion: @escaping () -> Void) {
+        // Capture deliveredAt before markAnswered so we can reconstruct the server-side
+        // timezone-qualified slot key ("noon_16") even if the state is later cleared.
+        // deliveredAt is the Unix timestamp embedded in the push payload by send-questions;
+        // deriving the UTC hour from it always produces the same key the server stored.
+        let deliveredAt = store.loadActiveQuestion(slot: slot)?.deliveredAt ?? Date()
+
         guard store.markAnswered(slot: slot, outcome: outcome) else {
             // A racing expiration already resolved this slot — show what actually applied.
             reshowResult(slot: slot)
@@ -163,9 +169,11 @@ final class NotificationActionHandler: NSObject, UNUserNotificationCenterDelegat
             return
         }
 
-        // Pass the notification completionHandler as the network completion so watchOS
-        // keeps the extension alive until mark-answered actually reaches Supabase.
-        AnswerReportingManager.shared.reportAnswer(slot: slot.rawValue, completion: completion)
+        // Pass both the slot name and the delivery timestamp so AnswerReportingManager
+        // can build the qualified key ("noon_16") that matches the active_questions row.
+        // Holding the notification completionHandler open keeps the watchOS extension
+        // alive until mark-answered actually reaches Supabase.
+        AnswerReportingManager.shared.reportAnswer(slot: slot.rawValue, deliveredAt: deliveredAt, completion: completion)
 
         // Capture lives before applying the outcome so we can detect whether a streak
         // reset actually occurred. A reset happens only when lives drop to 0 and refill
